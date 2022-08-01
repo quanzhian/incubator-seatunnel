@@ -1,20 +1,16 @@
 <!--
-
     Licensed to the Apache Software Foundation (ASF) under one or more
     contributor license agreements.  See the NOTICE file distributed with
     this work for additional information regarding copyright ownership.
     The ASF licenses this file to You under the Apache License, Version 2.0
     (the "License"); you may not use this file except in compliance with
     the License.  You may obtain a copy of the License at
-
        http://www.apache.org/licenses/LICENSE-2.0
-
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
     See the License for the specific language governing permissions and
     limitations under the License.
-
 -->
 <assembly xmlns="http://maven.apache.org/ASSEMBLY/2.1.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -64,6 +60,16 @@
             <fileMode>0755</fileMode>
         </fileSet>
         <fileSet>
+            <directory>../seatunnel-core/seatunnel-core-flink-sql/target</directory>
+            <includes>
+                <include>seatunnel-core-flink-sql*.jar</include>
+            </includes>
+            <excludes>
+                <exclude>%regex[.*((javadoc)|(sources))\.jar]</exclude>
+            </excludes>
+            <outputDirectory>/lib</outputDirectory>
+        </fileSet>
+        <fileSet>
             <directory>../seatunnel-core/seatunnel-core-spark/src/main/bin</directory>
             <outputDirectory>/bin</outputDirectory>
             <fileMode>0755</fileMode>
@@ -79,9 +85,14 @@
             <outputDirectory>/lib</outputDirectory>
         </fileSet>
         <fileSet>
-            <directory>../seatunnel-core/seatunnel-core-flink-sql/target</directory>
+            <directory>../seatunnel-core/seatunnel-flink-starter/src/main/bin</directory>
+            <outputDirectory>/bin</outputDirectory>
+            <fileMode>0755</fileMode>
+        </fileSet>
+        <fileSet>
+            <directory>../seatunnel-core/seatunnel-flink-starter/target</directory>
             <includes>
-                <include>seatunnel-core-flink-sql*.jar</include>
+                <include>seatunnel-flink-starter*.jar</include>
             </includes>
             <excludes>
                 <exclude>%regex[.*((javadoc)|(sources))\.jar]</exclude>
@@ -89,15 +100,21 @@
             <outputDirectory>/lib</outputDirectory>
         </fileSet>
         <fileSet>
-            <directory>../seatunnel-admin/seatunnel-admin-server/target</directory>
+            <directory>../seatunnel-core/seatunnel-spark-starter/src/main/bin</directory>
+            <outputDirectory>/bin</outputDirectory>
+            <fileMode>0755</fileMode>
+        </fileSet>
+        <fileSet>
+            <directory>../seatunnel-core/seatunnel-spark-starter/target</directory>
             <includes>
-                <include>seatunnel-admin-server*.jar</include>
+                <include>seatunnel-spark-starter*.jar</include>
             </includes>
             <excludes>
                 <exclude>%regex[.*((javadoc)|(sources))\.jar]</exclude>
             </excludes>
             <outputDirectory>/lib</outputDirectory>
         </fileSet>
+        <!-- connectors -->
         <fileSet>
             <directory>../seatunnel-connectors/seatunnel-connectors-flink-dist/target/lib</directory>
             <includes>
@@ -129,7 +146,7 @@
             <outputDirectory>/connectors/spark</outputDirectory>
         </fileSet>
         <fileSet>
-            <directory>../seatunnel-connectors</directory>
+            <directory>../</directory>
             <includes>
                 <include>plugin-mapping.properties</include>
             </includes>
@@ -156,6 +173,6 @@
             </includes>
             <outputDirectory>.</outputDirectory>
         </fileSet>
-        
+
     </fileSets>
 </assembly>

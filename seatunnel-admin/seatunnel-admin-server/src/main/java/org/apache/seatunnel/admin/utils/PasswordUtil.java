@@ -17,7 +17,7 @@
 
 package org.apache.seatunnel.admin.utils;
 
-import cn.hutool.crypto.SecureUtil;
+import org.apache.commons.codec.digest.DigestUtils;
 
 public class PasswordUtil {
 
@@ -27,7 +27,7 @@ public class PasswordUtil {
 
     public static String encrypt(String password, String salt) {
         String rawStr = password.concat(salt);
-        return SecureUtil.md5(rawStr);
+        return DigestUtils.md5Hex(rawStr);
     }
 
 }

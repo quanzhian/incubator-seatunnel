@@ -19,7 +19,7 @@ package org.apache.seatunnel.admin.config;
 
 import static com.google.common.collect.Maps.newTreeMap;
 
-import cn.hutool.core.util.StrUtil;
+import com.github.xiaoymin.knife4j.core.util.StrUtil;
 import io.swagger.models.Contact;
 import io.swagger.models.Info;
 import io.swagger.models.Model;

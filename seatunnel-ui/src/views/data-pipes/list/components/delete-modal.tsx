@@ -16,9 +16,9 @@
  */
 
 import { defineComponent } from 'vue'
-import type { PropType } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Modal from '@/components/modal'
+import type { PropType } from 'vue'
 
 const props = {
   showModal: {
@@ -54,7 +54,9 @@ const DeleteModal = defineComponent({
         onConfirm={this.handleConfirm}
       >
         {{
-          default: () => <span>{this.t('data_pipes.data_pipes_delete_tips')}</span>
+          default: () => (
+            <span>{this.t('data_pipes.data_pipes_delete_tips')}</span>
+          )
         }}
       </Modal>
     )

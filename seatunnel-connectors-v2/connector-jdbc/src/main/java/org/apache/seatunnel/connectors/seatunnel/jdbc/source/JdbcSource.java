@@ -18,7 +18,6 @@
 package org.apache.seatunnel.connectors.seatunnel.jdbc.source;
 
 import org.apache.seatunnel.api.common.PrepareFailException;
-import org.apache.seatunnel.api.common.SeaTunnelContext;
 import org.apache.seatunnel.api.serialization.Serializer;
 import org.apache.seatunnel.api.source.Boundedness;
 import org.apache.seatunnel.api.source.SeaTunnelSource;
@@ -57,7 +56,6 @@ import java.util.Map;
 public class JdbcSource implements SeaTunnelSource<SeaTunnelRow, JdbcSourceSplit, JdbcSourceState> {
     protected static final Logger LOG = LoggerFactory.getLogger(JdbcSource.class);
 
-    private SeaTunnelContext seaTunnelContext;
     private JdbcSourceOptions jdbcSourceOptions;
     private SeaTunnelRowType typeInfo;
 
@@ -94,11 +92,6 @@ public class JdbcSource implements SeaTunnelSource<SeaTunnelRow, JdbcSourceSplit
             0,
             true
         );
-    }
-
-    @Override
-    public void setSeaTunnelContext(SeaTunnelContext seaTunnelContext) {
-        this.seaTunnelContext = seaTunnelContext;
     }
 
     @Override
@@ -163,7 +156,7 @@ public class JdbcSource implements SeaTunnelSource<SeaTunnelRow, JdbcSourceSplit
         if (jdbcSourceOptions.getPartitionLowerBound().isPresent() && jdbcSourceOptions.getPartitionUpperBound().isPresent()) {
             max = jdbcSourceOptions.getPartitionUpperBound().get();
             min = jdbcSourceOptions.getPartitionLowerBound().get();
-            return new PartitionParameter(columnName, min, max);
+            return new PartitionParameter(columnName, min, max, jdbcSourceOptions.getPartitionNumber().orElse(null));
         }
         try (ResultSet rs = connection.createStatement().executeQuery(String.format("SELECT MAX(%s),MIN(%s) " +
             "FROM (%s) tt", columnName, columnName, query))) {
@@ -174,7 +167,7 @@ public class JdbcSource implements SeaTunnelSource<SeaTunnelRow, JdbcSourceSplit
                     Long.parseLong(rs.getString(2));
             }
         }
-        return new PartitionParameter(columnName, min, max);
+        return new PartitionParameter(columnName, min, max, jdbcSourceOptions.getPartitionNumber().orElse(null));
     }
 
     private PartitionParameter initPartitionParameterAndExtendSql(Connection connection) throws SQLException {

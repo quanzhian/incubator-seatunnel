@@ -17,7 +17,6 @@
 
 package org.apache.seatunnel.connectors.seatunnel.assertion.sink;
 
-import org.apache.seatunnel.api.common.SeaTunnelContext;
 import org.apache.seatunnel.api.sink.SeaTunnelSink;
 import org.apache.seatunnel.api.sink.SinkWriter;
 import org.apache.seatunnel.api.table.type.SeaTunnelDataType;
@@ -41,9 +40,11 @@ import java.util.List;
 @AutoService(SeaTunnelSink.class)
 public class AssertSink extends AbstractSimpleSink<SeaTunnelRow, Void> {
     private static final String RULES = "rules";
-    private SeaTunnelContext seaTunnelContext;
+    private static final String ROW_RULES = "row_rules";
+    private static final String FIELD_RULES = "field_rules";
     private SeaTunnelRowType seaTunnelRowType;
     private List<AssertFieldRule> assertFieldRules;
+    private List<AssertFieldRule.AssertRule> assertRowRules;
 
     @Override
     public void setTypeInfo(SeaTunnelRowType seaTunnelRowType) {
@@ -57,7 +58,7 @@ public class AssertSink extends AbstractSimpleSink<SeaTunnelRow, Void> {
 
     @Override
     public AbstractSinkWriter<SeaTunnelRow, Void> createWriter(SinkWriter.Context context) throws IOException {
-        return new AssertSinkWriter(seaTunnelRowType, assertFieldRules);
+        return new AssertSinkWriter(seaTunnelRowType, assertFieldRules, assertRowRules);
     }
 
     @Override
@@ -65,17 +66,21 @@ public class AssertSink extends AbstractSimpleSink<SeaTunnelRow, Void> {
         if (!pluginConfig.hasPath(RULES)) {
             Throwables.propagateIfPossible(new ConfigException.Missing(RULES));
         }
+        Config ruleConfig = pluginConfig.getConfig(RULES);
+        List<? extends Config> rowConfigList = null;
+        List<? extends Config> configList = null;
+        if (ruleConfig.hasPath(ROW_RULES)) {
+            rowConfigList = ruleConfig.getConfigList(ROW_RULES);
+            assertRowRules = new AssertRuleParser().parseRowRules(rowConfigList);
+        }
+        if (ruleConfig.hasPath(FIELD_RULES)) {
+            configList = ruleConfig.getConfigList(FIELD_RULES);
+            assertFieldRules = new AssertRuleParser().parseRules(configList);
+        }
 
-        List<? extends Config> configList = pluginConfig.getConfigList(RULES);
-        if (CollectionUtils.isEmpty(configList)) {
+        if (CollectionUtils.isEmpty(configList) && CollectionUtils.isEmpty(rowConfigList)) {
             Throwables.propagateIfPossible(new ConfigException.BadValue(RULES, "Assert rule config is empty, please add rule config."));
         }
-        assertFieldRules = new AssertRuleParser().parseRules(configList);
-    }
-
-    @Override
-    public void setSeaTunnelContext(SeaTunnelContext seaTunnelContext) {
-        this.seaTunnelContext = seaTunnelContext;
     }
 
     @Override

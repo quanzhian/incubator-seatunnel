@@ -1,5 +1,7 @@
 # How to use flink sql module
 
+> Tutorial of flink sql module
+
 ## Usage
 
 ### 1. Command Entrypoint
@@ -202,7 +204,7 @@ bin/start-seatunnel-sql.sh -m yarn-cluster --config config/dimjoin.sql.conf
 
 3. How to implement flink SQL cdc dim join (using mysql-cdc) with seatunnel flink-sql module
 
-##### First , Need create mysql table in mysql database
+##### First, we need to create a table in mysql database
 
 ```
 CREATE TABLE `dim_cdc_join_result` (

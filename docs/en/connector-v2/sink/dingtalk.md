@@ -1,15 +1,23 @@
 # DingTalk
 
+> DinkTalk sink connector
+
 ## Description
 
 A sink plugin which use DingTalk robot send message
 
+## Key features
+
+- [ ] [exactly-once](../../concept/connector-v2-features.md)
+- [ ] [schema projection](../../concept/connector-v2-features.md)
+
 ## Options
 
-| name                         | type        | required | default value |
-|------------------------------| ----------  | -------- | ------------- |
-| url                            | string      | yes      | -             |
-| secret             | string      | yes       | -             |
+| name             | type        | required | default value |
+|------------------| ----------  | -------- | ------------- |
+| url              | string      | yes      | -             |
+| secret           | string      | yes      | -             |
+| common-options   |             | no       | -             |
 
 ### url [string]
 
@@ -18,6 +26,10 @@ DingTalk robot address format is https://oapi.dingtalk.com/robot/send?access_tok
 ### secret [string]
 
 DingTalk robot secret (string)
+
+### common options
+
+Sink plugin common parameters, please refer to [Sink Common Options](common-options.md) for details
 
 ## Example
 

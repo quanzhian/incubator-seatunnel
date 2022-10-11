@@ -1,14 +1,27 @@
 # Socket
+
+> Socket source connector
+
 ## Description
 
-Used to read data from Socket. Both support streaming and batch mode.
+Used to read data from Socket.
+
+## Key features
+
+- [x] [batch](../../concept/connector-v2-features.md)
+- [x] [stream](../../concept/connector-v2-features.md)
+- [ ] [exactly-once](../../concept/connector-v2-features.md)
+- [ ] [schema projection](../../concept/connector-v2-features.md)
+- [ ] [parallelism](../../concept/connector-v2-features.md)
+- [ ] [support user-defined split](../../concept/connector-v2-features.md)
 
 ##  Options
 
-| name | type   | required | default value |
-| --- |--------| --- | --- |
-| host | String | No | localhost |
-| port | Integer | No | 9999 |
+| name           | type   | required | default value |
+| -------------- |--------| -------- | ------------- |
+| host           | String | No       | localhost     |
+| port           | Integer| No       | 9999          |
+| common-options |        | no       | -             |
 
 ### host [string]
 socket server host
@@ -16,6 +29,10 @@ socket server host
 ### port [integer]
 
 socket server port
+
+### common options 
+
+Source plugin common parameters, please refer to [Source Common Options](common-options.md) for details
 
 ## Example
 

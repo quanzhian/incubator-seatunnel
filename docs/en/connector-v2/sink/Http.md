@@ -13,7 +13,6 @@ Used to launch web hooks using data.
 ## Key features
 
 - [ ] [exactly-once](../../concept/connector-v2-features.md)
-- [ ] [schema projection](../../concept/connector-v2-features.md)
 
 ##  Options
 
@@ -68,3 +67,8 @@ Http {
     }
 ```
 
+## Changelog
+
+### 2.2.0-beta 2022-09-26
+
+- Add Http Sink Connector

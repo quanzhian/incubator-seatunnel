@@ -27,17 +27,18 @@ import static org.apache.seatunnel.engine.server.task.statemachine.SeaTunnelTask
 import static org.apache.seatunnel.engine.server.task.statemachine.SeaTunnelTaskState.WAITING_RESTORE;
 
 import org.apache.seatunnel.api.serialization.Serializer;
+import org.apache.seatunnel.api.source.SourceEvent;
 import org.apache.seatunnel.api.source.SourceSplit;
 import org.apache.seatunnel.api.source.SourceSplitEnumerator;
-import org.apache.seatunnel.engine.core.checkpoint.CheckpointType;
 import org.apache.seatunnel.engine.core.dag.actions.SourceAction;
 import org.apache.seatunnel.engine.server.checkpoint.ActionSubtaskState;
 import org.apache.seatunnel.engine.server.checkpoint.CheckpointBarrier;
-import org.apache.seatunnel.engine.server.checkpoint.operation.CheckpointBarrierTriggerOperation;
 import org.apache.seatunnel.engine.server.checkpoint.operation.TaskAcknowledgeOperation;
 import org.apache.seatunnel.engine.server.execution.ProgressState;
 import org.apache.seatunnel.engine.server.execution.TaskLocation;
 import org.apache.seatunnel.engine.server.task.context.SeaTunnelSplitEnumeratorContext;
+import org.apache.seatunnel.engine.server.task.operation.checkpoint.BarrierFlowOperation;
+import org.apache.seatunnel.engine.server.task.operation.source.LastCheckpointNotifyOperation;
 import org.apache.seatunnel.engine.server.task.record.Barrier;
 import org.apache.seatunnel.engine.server.task.statemachine.SeaTunnelTaskState;
 
@@ -51,13 +52,13 @@ import lombok.NonNull;
 import java.io.IOException;
 import java.io.Serializable;
 import java.net.URL;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -128,6 +129,7 @@ public class SourceSplitEnumeratorTask<SplitT extends SourceSplit> extends Coord
     public void triggerBarrier(Barrier barrier) throws Exception {
         if (barrier.prepareClose()) {
             this.currState = PREPARE_CLOSE;
+            this.prepareCloseBarrierId.set(barrier.getId());
         }
         final long barrierId = barrier.getId();
         Serializable snapshotState = null;
@@ -135,7 +137,7 @@ public class SourceSplitEnumeratorTask<SplitT extends SourceSplit> extends Coord
             if (barrier.snapshot()) {
                 snapshotState = enumerator.snapshotState(barrierId);
             }
-            sendToAllReader(location -> new CheckpointBarrierTriggerOperation(barrier, location));
+            sendToAllReader(location -> new BarrierFlowOperation(barrier, location));
         }
         if (barrier.snapshot()) {
             byte[] serialize = enumeratorStateSerializer.serialize(snapshotState);
@@ -148,7 +150,7 @@ public class SourceSplitEnumeratorTask<SplitT extends SourceSplit> extends Coord
     public void restoreState(List<ActionSubtaskState> actionStateList) throws Exception {
         Optional<Serializable> state = actionStateList.stream()
             .map(ActionSubtaskState::getState)
-            .flatMap(Collection::stream)
+            .flatMap(Collection::stream).filter(Objects::nonNull)
             .map(bytes -> sneaky(() -> enumeratorStateSerializer.deserialize(bytes)))
             .findFirst();
         if (state.isPresent()) {
@@ -174,14 +176,19 @@ public class SourceSplitEnumeratorTask<SplitT extends SourceSplit> extends Coord
         }
     }
 
-    public void requestSplit(long taskID) {
-        enumerator.handleSplitRequest((int) taskID);
+    public void requestSplit(long taskIndex) {
+        enumerator.handleSplitRequest((int) taskIndex);
+    }
+
+    public void handleSourceEvent(int subtaskId, SourceEvent sourceEvent) {
+        enumerator.handleSourceEvent(subtaskId, sourceEvent);
     }
 
     public void addTaskMemberMapping(TaskLocation taskID, Address memberAdder) {
         taskMemberMapping.put(taskID, memberAdder);
         taskIDToTaskLocationMapping.put(taskID.getTaskID(), taskID);
         taskIndexToTaskLocationMapping.put(taskID.getTaskIndex(), taskID);
+        unfinishedReaders.add(taskID.getTaskID());
     }
 
     public Address getTaskMemberAddress(long taskID) {
@@ -207,6 +214,7 @@ public class SourceSplitEnumeratorTask<SplitT extends SourceSplit> extends Coord
         }
     }
 
+    @SuppressWarnings("checkstyle:MagicNumber")
     private void stateProcess() throws Exception {
         switch (currState) {
             case INIT:
@@ -233,13 +241,17 @@ public class SourceSplitEnumeratorTask<SplitT extends SourceSplit> extends Coord
             case RUNNING:
                 // The reader closes automatically after reading
                 if (prepareCloseStatus) {
-                    triggerBarrier(new CheckpointBarrier(Barrier.PREPARE_CLOSE_BARRIER_ID, Instant.now().toEpochMilli(), CheckpointType.AUTO_SAVEPOINT_TYPE));
+                    this.getExecutionContext().sendToMaster(new LastCheckpointNotifyOperation(jobID, taskLocation));
                     currState = PREPARE_CLOSE;
+                } else {
+                    Thread.sleep(100);
                 }
                 break;
             case PREPARE_CLOSE:
                 if (closeCalled) {
                     currState = CLOSED;
+                } else {
+                    Thread.sleep(100);
                 }
                 break;
             case CLOSED:
@@ -274,7 +286,7 @@ public class SourceSplitEnumeratorTask<SplitT extends SourceSplit> extends Coord
     @Override
     public void notifyCheckpointComplete(long checkpointId) throws Exception {
         enumerator.notifyCheckpointComplete(checkpointId);
-        if (prepareCloseStatus) {
+        if (currState == PREPARE_CLOSE && prepareCloseBarrierId.get() == checkpointId) {
             closeCall();
         }
     }
@@ -282,7 +294,7 @@ public class SourceSplitEnumeratorTask<SplitT extends SourceSplit> extends Coord
     @Override
     public void notifyCheckpointAborted(long checkpointId) throws Exception {
         enumerator.notifyCheckpointAborted(checkpointId);
-        if (prepareCloseStatus) {
+        if (currState == PREPARE_CLOSE && prepareCloseBarrierId.get() == checkpointId) {
             closeCall();
         }
     }

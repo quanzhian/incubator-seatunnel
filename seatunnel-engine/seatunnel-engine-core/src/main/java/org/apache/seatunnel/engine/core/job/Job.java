@@ -25,7 +25,7 @@ import org.apache.seatunnel.engine.common.utils.PassiveCompletableFuture;
 public interface Job {
     long getJobId();
 
-    PassiveCompletableFuture<JobStatus> doWaitForJobComplete();
+    PassiveCompletableFuture<JobResult> doWaitForJobComplete();
 
     void cancelJob();
 
@@ -33,5 +33,4 @@ public interface Job {
 
     JobStatus waitForJobComplete();
 
-    void close();
 }

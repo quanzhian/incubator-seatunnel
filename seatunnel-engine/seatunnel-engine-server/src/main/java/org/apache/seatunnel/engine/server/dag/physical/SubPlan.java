@@ -20,7 +20,8 @@ package org.apache.seatunnel.engine.server.dag.physical;
 import org.apache.seatunnel.common.utils.ExceptionUtils;
 import org.apache.seatunnel.engine.common.utils.PassiveCompletableFuture;
 import org.apache.seatunnel.engine.core.job.JobImmutableInformation;
-import org.apache.seatunnel.engine.core.job.PipelineState;
+import org.apache.seatunnel.engine.core.job.PipelineExecutionState;
+import org.apache.seatunnel.engine.core.job.PipelineStatus;
 import org.apache.seatunnel.engine.server.execution.ExecutionState;
 import org.apache.seatunnel.engine.server.execution.TaskExecutionState;
 import org.apache.seatunnel.engine.server.master.JobMaster;
@@ -28,14 +29,18 @@ import org.apache.seatunnel.engine.server.master.JobMaster;
 import com.hazelcast.logging.ILogger;
 import com.hazelcast.logging.Logger;
 import com.hazelcast.map.IMap;
+import lombok.Data;
 import lombok.NonNull;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
+@Data
 public class SubPlan {
     private static final ILogger LOGGER = Logger.getLogger(SubPlan.class);
 
@@ -45,22 +50,18 @@ public class SubPlan {
 
     private final int pipelineId;
 
-    private final int totalPipelineNum;
+    private final AtomicInteger finishedTaskNum = new AtomicInteger(0);
 
-    private final JobImmutableInformation jobImmutableInformation;
+    private final AtomicInteger canceledTaskNum = new AtomicInteger(0);
 
-    private AtomicInteger finishedTaskNum = new AtomicInteger(0);
-
-    private AtomicInteger canceledTaskNum = new AtomicInteger(0);
-
-    private AtomicInteger failedTaskNum = new AtomicInteger(0);
+    private final AtomicInteger failedTaskNum = new AtomicInteger(0);
 
     private final String pipelineFullName;
 
     private final IMap<Object, Object> runningJobStateIMap;
 
     /**
-     * Timestamps (in milliseconds as returned by {@code System.currentTimeMillis()} when the
+     * Timestamps (in milliseconds) as returned by {@code System.currentTimeMillis()} when the
      * pipeline transitioned into a certain state. The index into this array is the ordinal
      * of the enum value, i.e. the timestamp when the graph went into state "RUNNING" is at {@code
      * stateTimestamps[RUNNING.ordinal()]}.
@@ -71,9 +72,14 @@ public class SubPlan {
      * Complete this future when this sub plan complete. When this future completed, the waitForCompleteBySubPlan in {@link PhysicalPlan }
      * whenComplete method will be called.
      */
-    private CompletableFuture<PipelineState> pipelineFuture;
+    private CompletableFuture<PipelineExecutionState> pipelineFuture;
 
     private final PipelineLocation pipelineLocation;
+
+    /**
+     * The error throw by physicalVertex, should be set when physicalVertex throw error.
+     */
+    private final AtomicReference<String> errorByPhysicalVertex = new AtomicReference<>();
 
     private final ExecutorService executorService;
 
@@ -95,45 +101,42 @@ public class SubPlan {
         this.pipelineId = pipelineId;
         this.pipelineLocation = new PipelineLocation(jobImmutableInformation.getJobId(), pipelineId);
         this.pipelineFuture = new CompletableFuture<>();
-        this.totalPipelineNum = totalPipelineNum;
         this.physicalVertexList = physicalVertexList;
         this.coordinatorVertexList = coordinatorVertexList;
         pipelineRestoreNum = 0;
 
-        Long[] stateTimestamps = new Long[PipelineState.values().length];
+        Long[] stateTimestamps = new Long[PipelineStatus.values().length];
         if (runningJobStateTimestampsIMap.get(pipelineLocation) == null) {
-            stateTimestamps[PipelineState.INITIALIZING.ordinal()] = initializationTimestamp;
+            stateTimestamps[PipelineStatus.INITIALIZING.ordinal()] = initializationTimestamp;
             runningJobStateTimestampsIMap.put(pipelineLocation, stateTimestamps);
 
         }
 
         if (runningJobStateIMap.get(pipelineLocation) == null) {
             // we must update runningJobStateTimestampsIMap first and then can update runningJobStateIMap
-            stateTimestamps[PipelineState.CREATED.ordinal()] = System.currentTimeMillis();
+            stateTimestamps[PipelineStatus.CREATED.ordinal()] = System.currentTimeMillis();
             runningJobStateTimestampsIMap.put(pipelineLocation, stateTimestamps);
 
-            runningJobStateIMap.put(pipelineLocation, PipelineState.CREATED);
+            runningJobStateIMap.put(pipelineLocation, PipelineStatus.CREATED);
         }
 
-        this.jobImmutableInformation = jobImmutableInformation;
         this.pipelineFullName = String.format(
             "Job %s (%s), Pipeline: [(%d/%d)]",
             jobImmutableInformation.getJobConfig().getName(),
             jobImmutableInformation.getJobId(),
             pipelineId,
             totalPipelineNum);
-
         this.runningJobStateIMap = runningJobStateIMap;
         this.runningJobStateTimestampsIMap = runningJobStateTimestampsIMap;
         this.executorService = executorService;
     }
 
-    public PassiveCompletableFuture<PipelineState> initStateFuture() {
-        physicalVertexList.stream().forEach(physicalVertex -> {
+    public PassiveCompletableFuture<PipelineExecutionState> initStateFuture() {
+        physicalVertexList.forEach(physicalVertex -> {
             addPhysicalVertexCallBack(physicalVertex.initStateFuture());
         });
 
-        coordinatorVertexList.stream().forEach(coordinator -> {
+        coordinatorVertexList.forEach(coordinator -> {
             addPhysicalVertexCallBack(coordinator.initStateFuture());
         });
 
@@ -143,36 +146,43 @@ public class SubPlan {
 
     private void addPhysicalVertexCallBack(PassiveCompletableFuture<TaskExecutionState> future) {
         future.thenAcceptAsync(executionState -> {
-            // We need not handle t, Because we will not return t from PhysicalVertex
-            if (ExecutionState.CANCELED.equals(executionState.getExecutionState())) {
-                canceledTaskNum.incrementAndGet();
-            } else if (ExecutionState.FAILED.equals(executionState.getExecutionState())) {
-                LOGGER.severe(String.format("Task Failed in %s, Begin to cancel other tasks in this pipeline.",
-                    this.getPipelineFullName()));
-                failedTaskNum.incrementAndGet();
-                cancelPipeline();
-            }
-
-            if (finishedTaskNum.incrementAndGet() == (physicalVertexList.size() + coordinatorVertexList.size())) {
-                if (failedTaskNum.get() > 0) {
-                    turnToEndState(PipelineState.FAILED);
-                    LOGGER.info(String.format("%s end with state FAILED", this.pipelineFullName));
-                } else if (canceledTaskNum.get() > 0) {
-                    turnToEndState(PipelineState.CANCELED);
-                    LOGGER.info(String.format("%s end with state CANCELED", this.pipelineFullName));
-                } else {
-                    turnToEndState(PipelineState.FINISHED);
-                    LOGGER.info(String.format("%s end with state FINISHED", this.pipelineFullName));
+            try {
+                // We need not handle t, Because we will not return t from PhysicalVertex
+                if (ExecutionState.CANCELED.equals(executionState.getExecutionState())) {
+                    canceledTaskNum.incrementAndGet();
+                } else if (ExecutionState.FAILED.equals(executionState.getExecutionState())) {
+                    LOGGER.severe(String.format("Task %s Failed in %s, Begin to cancel other tasks in this pipeline.",
+                        executionState.getTaskGroupLocation(),
+                        this.getPipelineFullName()));
+                    failedTaskNum.incrementAndGet();
+                    errorByPhysicalVertex.compareAndSet(null, executionState.getThrowableMsg());
+                    cancelPipeline();
                 }
-                pipelineFuture.complete((PipelineState) runningJobStateIMap.get(pipelineLocation));
+
+                if (finishedTaskNum.incrementAndGet() == (physicalVertexList.size() + coordinatorVertexList.size())) {
+                    if (failedTaskNum.get() > 0) {
+                        turnToEndState(PipelineStatus.FAILED);
+                        LOGGER.info(String.format("%s end with state FAILED", this.pipelineFullName));
+                    } else if (canceledTaskNum.get() > 0) {
+                        turnToEndState(PipelineStatus.CANCELED);
+                        LOGGER.info(String.format("%s end with state CANCELED", this.pipelineFullName));
+                    } else {
+                        turnToEndState(PipelineStatus.FINISHED);
+                        LOGGER.info(String.format("%s end with state FINISHED", this.pipelineFullName));
+                    }
+                    pipelineFuture.complete(new PipelineExecutionState(pipelineId, (PipelineStatus) runningJobStateIMap.get(pipelineLocation), errorByPhysicalVertex.get()));
+                }
+            } catch (Throwable e) {
+                LOGGER.severe(String.format("Never come here. handle %s %s error",
+                    executionState.getTaskGroupLocation(), executionState.getExecutionState()), e);
             }
         });
     }
 
-    private void turnToEndState(@NonNull PipelineState endState) {
+    private void turnToEndState(@NonNull PipelineStatus endState) {
         synchronized (this) {
             // consistency check
-            PipelineState current = (PipelineState) runningJobStateIMap.get(pipelineLocation);
+            PipelineStatus current = (PipelineStatus) runningJobStateIMap.get(pipelineLocation);
             if (current.isEndState()) {
                 String message = "Pipeline is trying to leave terminal state " + current;
                 LOGGER.severe(message);
@@ -192,7 +202,7 @@ public class SubPlan {
         }
     }
 
-    public boolean updatePipelineState(@NonNull PipelineState current, @NonNull PipelineState targetState) {
+    public boolean updatePipelineState(@NonNull PipelineStatus current, @NonNull PipelineStatus targetState) {
         synchronized (this) {
             // consistency check
             if (current.isEndState()) {
@@ -201,19 +211,19 @@ public class SubPlan {
                 throw new IllegalStateException(message);
             }
 
-            if (PipelineState.SCHEDULED.equals(targetState) && !PipelineState.CREATED.equals(current)) {
+            if (PipelineStatus.SCHEDULED.equals(targetState) && !PipelineStatus.CREATED.equals(current)) {
                 String message = "Only [CREATED] pipeline can turn to [SCHEDULED]" + current;
                 LOGGER.severe(message);
                 throw new IllegalStateException(message);
             }
 
-            if (PipelineState.DEPLOYING.equals(targetState) && !PipelineState.SCHEDULED.equals(current)) {
+            if (PipelineStatus.DEPLOYING.equals(targetState) && !PipelineStatus.SCHEDULED.equals(current)) {
                 String message = "Only [SCHEDULED] pipeline can turn to [DEPLOYING]" + current;
                 LOGGER.severe(message);
                 throw new IllegalStateException(message);
             }
 
-            if (PipelineState.RUNNING.equals(targetState) && !PipelineState.DEPLOYING.equals(current)) {
+            if (PipelineStatus.RUNNING.equals(targetState) && !PipelineStatus.DEPLOYING.equals(current)) {
                 String message = "Only [DEPLOYING] pipeline can turn to [RUNNING]" + current;
                 LOGGER.severe(message);
                 throw new IllegalStateException(message);
@@ -244,19 +254,24 @@ public class SubPlan {
         }
         // If an active Master Node done and another Master Node active, we can not know whether canceled pipeline
         // complete. So we need cancel running pipeline again.
-        if (!PipelineState.CANCELING.equals((PipelineState) runningJobStateIMap.get(pipelineLocation))) {
-            updatePipelineState(getPipelineState(), PipelineState.CANCELING);
+        if (!PipelineStatus.CANCELING.equals(runningJobStateIMap.get(pipelineLocation))) {
+            updatePipelineState(getPipelineState(), PipelineStatus.CANCELING);
         }
+        cancelCheckpointCoordinator();
         cancelPipelineTasks();
+    }
+
+    private void cancelCheckpointCoordinator() {
+        jobMaster.getCheckpointManager().listenPipelineRetry(pipelineId, PipelineStatus.CANCELING).join();
     }
 
     private void cancelPipelineTasks() {
         List<CompletableFuture<Void>> coordinatorCancelList =
-            coordinatorVertexList.stream().map(coordinator -> cancelTask(coordinator)).filter(x -> x != null)
+            coordinatorVertexList.stream().map(this::cancelTask).filter(Objects::nonNull)
                 .collect(Collectors.toList());
 
         List<CompletableFuture<Void>> taskCancelList =
-            physicalVertexList.stream().map(task -> cancelTask(task)).filter(x -> x != null)
+            physicalVertexList.stream().map(this::cancelTask).filter(Objects::nonNull)
                 .collect(Collectors.toList());
 
         try {
@@ -273,11 +288,10 @@ public class SubPlan {
     private CompletableFuture<Void> cancelTask(@NonNull PhysicalVertex task) {
         if (!task.getExecutionState().isEndState() &&
             !ExecutionState.CANCELING.equals(task.getExecutionState())) {
-            CompletableFuture<Void> future = CompletableFuture.supplyAsync(() -> {
+            return CompletableFuture.supplyAsync(() -> {
                 task.cancel();
                 return null;
             }, executorService);
-            return future;
         }
         return null;
     }
@@ -291,16 +305,12 @@ public class SubPlan {
         canceledTaskNum.set(0);
         failedTaskNum.set(0);
 
-        coordinatorVertexList.forEach(coordinate -> {
-            coordinate.reset();
-        });
+        coordinatorVertexList.forEach(PhysicalVertex::reset);
 
-        physicalVertexList.forEach(task -> {
-            task.reset();
-        });
+        physicalVertexList.forEach(PhysicalVertex::reset);
     }
 
-    private void updateStateTimestamps(@NonNull PipelineState targetState) {
+    private void updateStateTimestamps(@NonNull PipelineStatus targetState) {
         // we must update runningJobStateTimestampsIMap first and then can update runningJobStateIMap
         Long[] stateTimestamps = runningJobStateTimestampsIMap.get(pipelineLocation);
         stateTimestamps[targetState.ordinal()] = System.currentTimeMillis();
@@ -309,7 +319,7 @@ public class SubPlan {
     }
 
     private void resetPipelineState() {
-        PipelineState pipelineState = getPipelineState();
+        PipelineStatus pipelineState = getPipelineState();
         if (!pipelineState.isEndState()) {
             String message = String.format("%s reset state failed, only end state can be reset, current is %s",
                 getPipelineFullName(), pipelineState);
@@ -317,8 +327,8 @@ public class SubPlan {
             throw new IllegalStateException(message);
         }
 
-        updateStateTimestamps(PipelineState.CREATED);
-        runningJobStateIMap.set(pipelineLocation, PipelineState.CREATED);
+        updateStateTimestamps(PipelineStatus.CREATED);
+        runningJobStateIMap.set(pipelineLocation, PipelineStatus.CREATED);
     }
 
     /**
@@ -330,7 +340,9 @@ public class SubPlan {
                 pipelineRestoreNum++;
                 LOGGER.info(String.format("Restore pipeline %s", pipelineFullName));
                 // We must ensure the scheduler complete and then can handle pipeline state change.
-                jobMaster.getScheduleFuture().join();
+                if (jobMaster.getScheduleFuture() != null) {
+                    jobMaster.getScheduleFuture().join();
+                }
 
                 if (reSchedulerPipelineFuture != null) {
                     reSchedulerPipelineFuture.join();
@@ -341,6 +353,7 @@ public class SubPlan {
                     forcePipelineFinish();
                     return;
                 }
+                jobMaster.getCheckpointManager().reportedPipelineRunning(pipelineId, false);
                 reSchedulerPipelineFuture = jobMaster.reSchedulerPipeline(this);
                 if (reSchedulerPipelineFuture != null) {
                     reSchedulerPipelineFuture.join();
@@ -369,10 +382,12 @@ public class SubPlan {
      */
     public void restorePipelineState() {
         // only need restore from RUNNING or CANCELING state
-        if (getPipelineState().ordinal() < PipelineState.RUNNING.ordinal()) {
-            restorePipeline();
-        } else if (PipelineState.CANCELING.equals(getPipelineState())) {
+        if (getPipelineState().ordinal() < PipelineStatus.RUNNING.ordinal()) {
             cancelPipelineTasks();
+        } else if (PipelineStatus.CANCELING.equals(getPipelineState())) {
+            cancelPipelineTasks();
+        } else if (PipelineStatus.RUNNING.equals(getPipelineState())) {
+            jobMaster.getCheckpointManager().reportedPipelineRunning(this.getPipelineLocation().getPipelineId(), true);
         }
     }
 
@@ -388,8 +403,8 @@ public class SubPlan {
         return pipelineFullName;
     }
 
-    public PipelineState getPipelineState() {
-        return (PipelineState) runningJobStateIMap.get(pipelineLocation);
+    public PipelineStatus getPipelineState() {
+        return (PipelineStatus) runningJobStateIMap.get(pipelineLocation);
     }
 
     public PipelineLocation getPipelineLocation() {

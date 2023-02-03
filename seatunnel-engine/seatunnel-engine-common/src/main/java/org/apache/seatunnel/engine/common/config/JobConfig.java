@@ -18,6 +18,7 @@
 package org.apache.seatunnel.engine.common.config;
 
 import org.apache.seatunnel.api.common.JobContext;
+import org.apache.seatunnel.api.env.EnvCommonOptions;
 import org.apache.seatunnel.engine.common.serializeable.ConfigDataSerializerHook;
 
 import com.hazelcast.nio.ObjectDataInput;
@@ -26,11 +27,15 @@ import com.hazelcast.nio.serialization.IdentifiedDataSerializable;
 import lombok.Data;
 
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 
 @Data
 public class JobConfig implements IdentifiedDataSerializable {
-    private String name;
+    private String name = EnvCommonOptions.JOB_NAME.defaultValue();
     private JobContext jobContext;
+
+    private Map<String, Object> envOptions = new HashMap<>();
 
     @Override
     public int getFactoryId() {
@@ -46,11 +51,13 @@ public class JobConfig implements IdentifiedDataSerializable {
     public void writeData(ObjectDataOutput out) throws IOException {
         out.writeString(name);
         out.writeObject(jobContext);
+        out.writeObject(envOptions);
     }
 
     @Override
     public void readData(ObjectDataInput in) throws IOException {
         this.name = in.readString();
         this.jobContext = in.readObject();
+        this.envOptions = in.readObject();
     }
 }

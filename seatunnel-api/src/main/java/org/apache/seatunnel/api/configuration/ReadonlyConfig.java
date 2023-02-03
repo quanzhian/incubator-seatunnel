@@ -22,20 +22,20 @@ import static org.apache.seatunnel.api.configuration.util.ConfigUtil.convertValu
 import static org.apache.seatunnel.api.configuration.util.ConfigUtil.flatteningMap;
 import static org.apache.seatunnel.api.configuration.util.ConfigUtil.treeMap;
 
+import org.apache.seatunnel.shade.com.fasterxml.jackson.core.JsonProcessingException;
+import org.apache.seatunnel.shade.com.fasterxml.jackson.core.type.TypeReference;
+import org.apache.seatunnel.shade.com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.seatunnel.shade.com.typesafe.config.Config;
 import org.apache.seatunnel.shade.com.typesafe.config.ConfigRenderOptions;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
+import java.io.Serializable;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-public class ReadonlyConfig {
-
+public class ReadonlyConfig implements Serializable {
+    private static final long serialVersionUID = 1L;
     private static final ObjectMapper JACKSON_MAPPER = new ObjectMapper();
 
     /**
@@ -97,7 +97,7 @@ public class ReadonlyConfig {
         for (int i = 0; i < keys.length; i++) {
             value = data.get(keys[i]);
             if (i < keys.length - 1) {
-                if (!((value instanceof Map))) {
+                if (!(value instanceof Map)) {
                     return Optional.empty();
                 } else {
                     data = (Map<String, Object>) value;

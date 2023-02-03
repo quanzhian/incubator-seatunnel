@@ -11,7 +11,7 @@ Used to read data from Clickhouse.
 - [x] [batch](../../concept/connector-v2-features.md)
 - [ ] [stream](../../concept/connector-v2-features.md)
 - [ ] [exactly-once](../../concept/connector-v2-features.md)
-- [x] [schema projection](../../concept/connector-v2-features.md)
+- [x] [column projection](../../concept/connector-v2-features.md)
 
 supports query SQL and can achieve projection effect.
 
@@ -27,13 +27,12 @@ Reading data from Clickhouse can also be done using JDBC
 ## Options
 
 | name           | type   | required | default value |
-| -------------- | ------ | -------- | ------------- |
+|----------------|--------|----------|---------------|
 | host           | string | yes      | -             |
 | database       | string | yes      | -             |
 | sql            | string | yes      | -             |
 | username       | string | yes      | -             |
 | password       | string | yes      | -             |
-| schema         | config | No       | -             |
 | common-options |        | no       | -             |
 
 ### host [string]
@@ -56,12 +55,6 @@ The query sql used to search data though Clickhouse server
 
 `ClickHouse` user password
 
-### schema [Config]
-
-#### fields [Config]
-
-the schema fields of upstream data
-
 ### common options 
 
 Source plugin common parameters, please refer to [Source Common Options](common-options.md) for details
@@ -82,3 +75,20 @@ source {
   
 }
 ```
+
+## Changelog
+
+### 2.2.0-beta 2022-09-26
+
+- Add ClickHouse Source Connector
+
+### 2.3.0-beta 2022-10-20
+
+- [Improve] Clickhouse Source random use host when config multi-host ([3108](https://github.com/apache/incubator-seatunnel/pull/3108))
+
+### next version
+
+- [Improve] Clickhouse Source support nest type and array type([3047](https://github.com/apache/incubator-seatunnel/pull/3047))
+
+- [Improve] Clickhouse Source support geo type([3141](https://github.com/apache/incubator-seatunnel/pull/3141))
+

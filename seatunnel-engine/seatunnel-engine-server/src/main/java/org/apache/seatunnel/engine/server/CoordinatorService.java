@@ -17,24 +17,33 @@
 
 package org.apache.seatunnel.engine.server;
 
+import org.apache.seatunnel.api.common.metrics.JobMetrics;
 import org.apache.seatunnel.common.utils.ExceptionUtils;
+import org.apache.seatunnel.common.utils.StringFormatUtils;
 import org.apache.seatunnel.engine.common.Constant;
+import org.apache.seatunnel.engine.common.config.EngineConfig;
 import org.apache.seatunnel.engine.common.exception.JobException;
 import org.apache.seatunnel.engine.common.exception.SeaTunnelEngineException;
 import org.apache.seatunnel.engine.common.utils.PassiveCompletableFuture;
+import org.apache.seatunnel.engine.core.job.JobDAGInfo;
+import org.apache.seatunnel.engine.core.job.JobInfo;
+import org.apache.seatunnel.engine.core.job.JobResult;
 import org.apache.seatunnel.engine.core.job.JobStatus;
-import org.apache.seatunnel.engine.core.job.RunningJobInfo;
+import org.apache.seatunnel.engine.core.job.PipelineStatus;
 import org.apache.seatunnel.engine.server.dag.physical.PhysicalVertex;
 import org.apache.seatunnel.engine.server.dag.physical.PipelineLocation;
 import org.apache.seatunnel.engine.server.dag.physical.SubPlan;
 import org.apache.seatunnel.engine.server.execution.ExecutionState;
 import org.apache.seatunnel.engine.server.execution.TaskExecutionState;
 import org.apache.seatunnel.engine.server.execution.TaskGroupLocation;
+import org.apache.seatunnel.engine.server.master.JobHistoryService;
 import org.apache.seatunnel.engine.server.master.JobMaster;
+import org.apache.seatunnel.engine.server.metrics.JobMetricsUtil;
 import org.apache.seatunnel.engine.server.resourcemanager.ResourceManager;
 import org.apache.seatunnel.engine.server.resourcemanager.ResourceManagerFactory;
 import org.apache.seatunnel.engine.server.resourcemanager.resource.SlotProfile;
 
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.hazelcast.cluster.Address;
 import com.hazelcast.internal.serialization.Data;
 import com.hazelcast.internal.services.MembershipServiceEvent;
@@ -50,28 +59,32 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 public class CoordinatorService {
-    private NodeEngineImpl nodeEngine;
+    private final NodeEngineImpl nodeEngine;
     private final ILogger logger;
 
     private volatile ResourceManager resourceManager;
 
+    private JobHistoryService jobHistoryService;
+
     /**
-     * IMap key is jobId and value is a Tuple2
+     * IMap key is jobId and value is {@link JobInfo}.
      * Tuple2 key is JobMaster init timestamp and value is the jobImmutableInformation which is sent by client when submit job
      * <p>
      * This IMap is used to recovery runningJobInfoIMap in JobMaster when a new master node active
      */
-    private IMap<Long, RunningJobInfo> runningJobInfoIMap;
+    private IMap<Long, JobInfo> runningJobInfoIMap;
 
     /**
      * IMap key is one of jobId {@link org.apache.seatunnel.engine.server.dag.physical.PipelineLocation} and
      * {@link org.apache.seatunnel.engine.server.execution.TaskGroupLocation}
      * <p>
-     * The value of IMap is one of {@link JobStatus} {@link org.apache.seatunnel.engine.core.job.PipelineState}
+     * The value of IMap is one of {@link JobStatus} {@link PipelineStatus}
      * {@link org.apache.seatunnel.engine.server.execution.ExecutionState}
      * <p>
      * This IMap is used to recovery runningJobStateIMap in JobMaster when a new master node active
@@ -112,14 +125,27 @@ public class CoordinatorService {
 
     private final ExecutorService executorService;
 
+    private final SeaTunnelServer seaTunnelServer;
+
+    private final ScheduledExecutorService masterActiveListener;
+
+    private final EngineConfig engineConfig;
+
     @SuppressWarnings("checkstyle:MagicNumber")
-    public CoordinatorService(@NonNull NodeEngineImpl nodeEngine, @NonNull ExecutorService executorService) {
+    public CoordinatorService(@NonNull NodeEngineImpl nodeEngine, @NonNull SeaTunnelServer seaTunnelServer, EngineConfig engineConfig) {
         this.nodeEngine = nodeEngine;
         this.logger = nodeEngine.getLogger(getClass());
-        this.executorService = executorService;
+        this.executorService =
+            Executors.newCachedThreadPool(new ThreadFactoryBuilder()
+                .setNameFormat("seatunnel-coordinator-service-%d").build());
+        this.seaTunnelServer = seaTunnelServer;
+        this.engineConfig = engineConfig;
+        masterActiveListener = Executors.newSingleThreadScheduledExecutor();
+        masterActiveListener.scheduleAtFixedRate(this::checkNewActiveMaster, 0, 100, TimeUnit.MILLISECONDS);
+    }
 
-        ScheduledExecutorService masterActiveListener = Executors.newSingleThreadScheduledExecutor();
-        masterActiveListener.scheduleAtFixedRate(() -> checkNewActiveMaster(), 0, 100, TimeUnit.MILLISECONDS);
+    public JobHistoryService getJobHistoryService() {
+        return jobHistoryService;
     }
 
     public JobMaster getJobMaster(Long jobId) {
@@ -145,10 +171,21 @@ public class CoordinatorService {
         runningJobStateTimestampsIMap = nodeEngine.getHazelcastInstance().getMap(Constant.IMAP_STATE_TIMESTAMPS);
         ownedSlotProfilesIMap = nodeEngine.getHazelcastInstance().getMap(Constant.IMAP_OWNED_SLOT_PROFILES);
 
-        List<CompletableFuture<Void>> collect = runningJobInfoIMap.entrySet().stream().map(entry -> {
-            return CompletableFuture.runAsync(() -> restoreJobFromMasterActiveSwitch(entry.getKey(), entry.getValue()),
-                executorService);
-        }).collect(Collectors.toList());
+        jobHistoryService = new JobHistoryService(
+            runningJobStateIMap,
+            logger,
+            runningJobMasterMap,
+            nodeEngine.getHazelcastInstance().getMap(Constant.IMAP_FINISHED_JOB_STATE),
+            nodeEngine.getHazelcastInstance().getMap(Constant.IMAP_FINISHED_JOB_METRICS),
+            nodeEngine.getHazelcastInstance().getMap(Constant.IMAP_FINISHED_JOB_VERTEX_INFO)
+        );
+
+        List<CompletableFuture<Void>> collect = runningJobInfoIMap.entrySet().stream().map(entry ->
+            CompletableFuture.runAsync(() -> {
+                logger.info(String.format("begin restore job (%s) from master active switch", entry.getKey()));
+                restoreJobFromMasterActiveSwitch(entry.getKey(), entry.getValue());
+                logger.info(String.format("restore job (%s) from master active switch finished", entry.getKey()));
+            }, executorService)).collect(Collectors.toList());
 
         try {
             CompletableFuture<Void> voidCompletableFuture = CompletableFuture.allOf(
@@ -159,7 +196,7 @@ public class CoordinatorService {
         }
     }
 
-    private void restoreJobFromMasterActiveSwitch(@NonNull Long jobId, @NonNull RunningJobInfo runningJobInfo) {
+    private void restoreJobFromMasterActiveSwitch(@NonNull Long jobId, @NonNull JobInfo jobInfo) {
         if (runningJobStateIMap.get(jobId) == null) {
             runningJobInfoIMap.remove(jobId);
             return;
@@ -167,29 +204,37 @@ public class CoordinatorService {
 
         JobStatus jobStatus = (JobStatus) runningJobStateIMap.get(jobId);
         JobMaster jobMaster =
-            new JobMaster(runningJobInfo.getJobImmutableInformation(),
+            new JobMaster(jobInfo.getJobImmutableInformation(),
                 nodeEngine,
                 executorService,
-                resourceManager,
+                getResourceManager(),
+                getJobHistoryService(),
                 runningJobStateIMap,
                 runningJobStateTimestampsIMap,
-                ownedSlotProfilesIMap);
+                ownedSlotProfilesIMap,
+                engineConfig);
 
         try {
             jobMaster.init(runningJobInfoIMap.get(jobId).getInitializationTimestamp());
         } catch (Exception e) {
-            throw new SeaTunnelEngineException(String.format("Job id %s init JobMaster failed", jobId));
+            throw new SeaTunnelEngineException(String.format("Job id %s init JobMaster failed", jobId), e);
         }
 
+        String jobFullName = jobMaster.getPhysicalPlan().getJobFullName();
         if (jobStatus.isEndState()) {
+            logger.info(String.format(
+                "The restore %s is in an end state %s, store the job info to JobHistory and clear the job running time info",
+                jobFullName, jobStatus));
             removeJobIMap(jobMaster);
             return;
         }
 
         if (jobStatus.ordinal() < JobStatus.RUNNING.ordinal()) {
+            logger.info(
+                String.format("The restore %s is state %s, cancel job and submit it again.", jobFullName, jobStatus));
             jobMaster.cancelJob();
             jobMaster.getJobMasterCompleteFuture().join();
-            submitJob(jobId, runningJobInfo.getJobImmutableInformation()).join();
+            submitJob(jobId, jobInfo.getJobImmutableInformation()).join();
             return;
         }
 
@@ -197,43 +242,48 @@ public class CoordinatorService {
         jobMaster.markRestore();
 
         if (JobStatus.CANCELLING.equals(jobStatus)) {
+            logger.info(String.format("The restore %s is in %s state, cancel the job", jobFullName, jobStatus));
             CompletableFuture.runAsync(() -> {
                 try {
                     jobMaster.cancelJob();
                     jobMaster.run();
                 } finally {
                     // storage job state info to HistoryStorage
-                    removeJobIMap(jobMaster);
-                    runningJobMasterMap.remove(jobId);
+                    onJobDone(jobMaster, jobId);
                 }
             });
             return;
         }
 
         if (JobStatus.RUNNING.equals(jobStatus)) {
+            logger.info(String.format("The restore %s is in %s state, restore pipeline and take over this job running",
+                jobFullName, jobStatus));
             CompletableFuture.runAsync(() -> {
                 try {
                     jobMaster.getPhysicalPlan().getPipelineList().forEach(SubPlan::restorePipelineState);
                     jobMaster.run();
                 } finally {
-                    // storage job state info to HistoryStorage
-                    removeJobIMap(jobMaster);
-                    runningJobMasterMap.remove(jobId);
+                    onJobDone(jobMaster, jobId);
                 }
             });
-            return;
         }
     }
 
     private void checkNewActiveMaster() {
-        if (!isActive && isMasterNode()) {
-            logger.info("This node become a new active master node, begin init coordinator service");
-            initCoordinatorService();
-            isActive = true;
-        } else if (isActive && !isMasterNode()) {
+        try {
+            if (!isActive && this.seaTunnelServer.isMasterNode()) {
+                logger.info("This node become a new active master node, begin init coordinator service");
+                initCoordinatorService();
+                isActive = true;
+            } else if (isActive && !this.seaTunnelServer.isMasterNode()) {
+                isActive = false;
+                logger.info("This node become leave active master node, begin clear coordinator service");
+                clearCoordinatorService();
+            }
+        } catch (Exception e) {
             isActive = false;
-            logger.info("This node become leave active master node, begin clear coordinator service");
-            clearCoordinatorService();
+            logger.severe(ExceptionUtils.getMessage(e));
+            throw new SeaTunnelEngineException("check new active master error, stop loop", e);
         }
     }
 
@@ -247,21 +297,12 @@ public class CoordinatorService {
             executorService.awaitTermination(20, TimeUnit.SECONDS);
             runningJobMasterMap = new ConcurrentHashMap<>();
         } catch (InterruptedException e) {
-            throw new SeaTunnelEngineException("wait clean executor service error");
+            throw new SeaTunnelEngineException("wait clean executor service error", e);
         }
 
         if (resourceManager != null) {
             resourceManager.close();
         }
-    }
-
-    public boolean isMasterNode() {
-        Address masterAddress = nodeEngine.getMasterAddress();
-        if (masterAddress == null) {
-            return false;
-        }
-
-        return masterAddress.equals(nodeEngine.getThisAddress());
     }
 
     /**
@@ -289,12 +330,13 @@ public class CoordinatorService {
             this.nodeEngine,
             executorService,
             getResourceManager(),
+            getJobHistoryService(),
             runningJobStateIMap,
             runningJobStateTimestampsIMap,
-            ownedSlotProfilesIMap);
+            ownedSlotProfilesIMap, engineConfig);
         executorService.submit(() -> {
             try {
-                runningJobInfoIMap.put(jobId, new RunningJobInfo(System.currentTimeMillis(), jobImmutableInformation));
+                runningJobInfoIMap.put(jobId, new JobInfo(System.currentTimeMillis(), jobImmutableInformation));
                 runningJobMasterMap.put(jobId, jobMaster);
                 jobMaster.init(runningJobInfoIMap.get(jobId).getInitializationTimestamp());
             } catch (Throwable e) {
@@ -308,12 +350,31 @@ public class CoordinatorService {
             try {
                 jobMaster.run();
             } finally {
-                // storage job state info to HistoryStorage
-                removeJobIMap(jobMaster);
-                runningJobMasterMap.remove(jobId);
+                onJobDone(jobMaster, jobId);
             }
         });
-        return new PassiveCompletableFuture(voidCompletableFuture);
+        return new PassiveCompletableFuture<>(voidCompletableFuture);
+    }
+
+    public PassiveCompletableFuture<Void> savePoint(long jobId) {
+        CompletableFuture<Void> voidCompletableFuture = new CompletableFuture<>();
+        if (!runningJobMasterMap.containsKey(jobId)) {
+            Throwable throwable = new Throwable("The jobId: " + jobId + "of savePoint does not exist");
+            logger.warning(throwable);
+            voidCompletableFuture.completeExceptionally(throwable);
+        } else {
+            JobMaster jobMaster = runningJobMasterMap.get(jobId);
+            voidCompletableFuture = jobMaster.savePoint();
+        }
+        return new PassiveCompletableFuture<>(voidCompletableFuture);
+    }
+
+    private void onJobDone(JobMaster jobMaster, long jobId) {
+        // storage job state and metrics to HistoryStorage
+        jobHistoryService.storeJobInfo(jobId, runningJobMasterMap.get(jobId).getJobDAGInfo());
+        jobHistoryService.storeFinishedJobState(jobMaster);
+        removeJobIMap(jobMaster);
+        runningJobMasterMap.remove(jobId);
     }
 
     private void removeJobIMap(JobMaster jobMaster) {
@@ -339,15 +400,16 @@ public class CoordinatorService {
         runningJobInfoIMap.remove(jobId);
     }
 
-    public PassiveCompletableFuture<JobStatus> waitForJobComplete(long jobId) {
+    public PassiveCompletableFuture<JobResult> waitForJobComplete(long jobId) {
         JobMaster runningJobMaster = runningJobMasterMap.get(jobId);
         if (runningJobMaster == null) {
-            // TODO Get Job Status from JobHistoryStorage
-            CompletableFuture<JobStatus> future = new CompletableFuture<>();
-            future.complete(JobStatus.FINISHED);
+            JobStatus jobStatus = jobHistoryService.getJobDetailState(jobId).getJobStatus();
+            CompletableFuture<JobResult> future = new CompletableFuture<>();
+            // TODO support history service record job execute error
+            future.complete(new JobResult(jobStatus, null));
             return new PassiveCompletableFuture<>(future);
         } else {
-            return runningJobMaster.getJobMasterCompleteFuture();
+            return new PassiveCompletableFuture<>(runningJobMaster.getJobMasterCompleteFuture());
         }
     }
 
@@ -368,10 +430,28 @@ public class CoordinatorService {
     public JobStatus getJobStatus(long jobId) {
         JobMaster runningJobMaster = runningJobMasterMap.get(jobId);
         if (runningJobMaster == null) {
-            // TODO Get Job Status from JobHistoryStorage
-            return JobStatus.FINISHED;
+            JobHistoryService.JobStateData jobDetailState = jobHistoryService.getJobDetailState(jobId);
+            return null == jobDetailState ? null : jobDetailState.getJobStatus();
         }
         return runningJobMaster.getJobStatus();
+    }
+
+    public JobMetrics getJobMetrics(long jobId) {
+        JobMaster runningJobMaster = runningJobMasterMap.get(jobId);
+        if (runningJobMaster == null) {
+            return jobHistoryService.getJobMetrics(jobId);
+        }
+        JobMetrics jobMetrics = JobMetricsUtil.toJobMetrics(runningJobMaster.getCurrJobMetrics());
+        JobMetrics jobMetricsImap = jobHistoryService.getJobMetrics(jobId);
+        return jobMetricsImap != null ? jobMetricsImap.merge(jobMetrics) : jobMetrics;
+    }
+
+    public JobDAGInfo getJobInfo(long jobId) {
+        JobDAGInfo jobInfo = jobHistoryService.getJobDAGInfo(jobId);
+        if (jobInfo != null) {
+            return jobInfo;
+        }
+        return runningJobMasterMap.get(jobId).getJobDAGInfo();
     }
 
     /**
@@ -387,15 +467,14 @@ public class CoordinatorService {
     }
 
     public void shutdown() {
-        if (resourceManager != null) {
-            resourceManager.close();
+        if (masterActiveListener != null) {
+            masterActiveListener.shutdownNow();
         }
+        clearCoordinatorService();
     }
 
     /**
      * return true if this node is a master node and the coordinator service init finished.
-     *
-     * @return
      */
     public boolean isCoordinatorActive() {
         return isActive;
@@ -417,11 +496,12 @@ public class CoordinatorService {
             ExecutionState executionState = physicalVertex.getExecutionState();
             if (null != deployAddress && deployAddress.equals(lostAddress) &&
                 (executionState.equals(ExecutionState.DEPLOYING) ||
-                    executionState.equals(ExecutionState.RUNNING))) {
+                    executionState.equals(ExecutionState.RUNNING) ||
+                    executionState.equals(ExecutionState.CANCELING))) {
                 TaskGroupLocation taskGroupLocation = physicalVertex.getTaskGroupLocation();
                 physicalVertex.updateTaskExecutionState(
                     new TaskExecutionState(taskGroupLocation, ExecutionState.FAILED,
-                        new SeaTunnelEngineException(
+                        new JobException(
                             String.format("The taskGroup(%s) deployed node(%s) offline", taskGroupLocation,
                                 lostAddress))));
             }
@@ -431,5 +511,128 @@ public class CoordinatorService {
     public void memberRemoved(MembershipServiceEvent event) {
         this.getResourceManager().memberRemoved(event);
         this.failedTaskOnMemberRemoved(event);
+    }
+
+    public void printExecutionInfo() {
+        ThreadPoolExecutor threadPoolExecutor = (ThreadPoolExecutor) executorService;
+        int activeCount = threadPoolExecutor.getActiveCount();
+        int corePoolSize = threadPoolExecutor.getCorePoolSize();
+        int maximumPoolSize = threadPoolExecutor.getMaximumPoolSize();
+        int poolSize = threadPoolExecutor.getPoolSize();
+        long completedTaskCount = threadPoolExecutor.getCompletedTaskCount();
+        long taskCount = threadPoolExecutor.getTaskCount();
+        logger.info(StringFormatUtils.formatTable(
+            "CoordinatorService Thread Pool Status",
+            "activeCount",
+            activeCount,
+
+            "corePoolSize",
+            corePoolSize,
+
+            "maximumPoolSize",
+            maximumPoolSize,
+
+            "poolSize",
+            poolSize,
+
+            "completedTaskCount",
+            completedTaskCount,
+
+            "taskCount",
+            taskCount));
+    }
+
+    public void printJobDetailInfo() {
+        AtomicLong createdJobCount = new AtomicLong();
+        AtomicLong scheduledJobCount = new AtomicLong();
+        AtomicLong runningJobCount = new AtomicLong();
+        AtomicLong failingJobCount = new AtomicLong();
+        AtomicLong failedJobCount = new AtomicLong();
+        AtomicLong cancellingJobCount = new AtomicLong();
+        AtomicLong canceledJobCount = new AtomicLong();
+        AtomicLong finishedJobCount = new AtomicLong();
+        AtomicLong restartingJobCount = new AtomicLong();
+        AtomicLong suspendedJobCount = new AtomicLong();
+        AtomicLong reconcilingJobCount = new AtomicLong();
+
+        if (runningJobInfoIMap != null) {
+            runningJobInfoIMap.keySet().forEach(jobId -> {
+                if (runningJobStateIMap.get(jobId) != null) {
+                    JobStatus jobStatus = (JobStatus) runningJobStateIMap.get(jobId);
+                    switch (jobStatus) {
+                        case CREATED:
+                            createdJobCount.addAndGet(1);
+                            break;
+                        case SCHEDULED:
+                            scheduledJobCount.addAndGet(1);
+                            break;
+                        case RUNNING:
+                            runningJobCount.addAndGet(1);
+                            break;
+                        case FAILING:
+                            failingJobCount.addAndGet(1);
+                            break;
+                        case FAILED:
+                            failedJobCount.addAndGet(1);
+                            break;
+                        case CANCELLING:
+                            cancellingJobCount.addAndGet(1);
+                            break;
+                        case CANCELED:
+                            canceledJobCount.addAndGet(1);
+                            break;
+                        case FINISHED:
+                            finishedJobCount.addAndGet(1);
+                            break;
+                        case RESTARTING:
+                            restartingJobCount.addAndGet(1);
+                            break;
+                        case SUSPENDED:
+                            suspendedJobCount.addAndGet(1);
+                            break;
+                        case RECONCILING:
+                            reconcilingJobCount.addAndGet(1);
+                            break;
+                        default:
+
+                    }
+                }
+            });
+        }
+
+        logger.info(StringFormatUtils.formatTable(
+            "Job info detail",
+            "createdJobCount",
+            createdJobCount,
+
+            "scheduledJobCount",
+            scheduledJobCount,
+
+            "runningJobCount",
+            runningJobCount,
+
+            "failingJobCount",
+            failingJobCount,
+
+            "failedJobCount",
+            failedJobCount,
+
+            "cancellingJobCount",
+            cancellingJobCount,
+
+            "canceledJobCount",
+            canceledJobCount,
+
+            "finishedJobCount",
+            finishedJobCount,
+
+            "restartingJobCount",
+            restartingJobCount,
+
+            "suspendedJobCount",
+            suspendedJobCount,
+
+            "reconcilingJobCount",
+            reconcilingJobCount));
     }
 }

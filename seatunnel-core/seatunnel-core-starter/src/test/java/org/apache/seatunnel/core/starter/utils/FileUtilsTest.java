@@ -19,7 +19,11 @@ package org.apache.seatunnel.core.starter.utils;
 
 import org.apache.seatunnel.common.config.DeployMode;
 import org.apache.seatunnel.core.starter.command.AbstractCommandArgs;
+import org.apache.seatunnel.core.starter.command.Command;
 
+import com.beust.jcommander.Parameter;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -43,15 +47,21 @@ public class FileUtilsTest {
         Assertions.assertEquals("flink.batch.conf", FileUtils.getConfigPath(sparkCommandArgs).toString());
     }
 
+    @EqualsAndHashCode(callSuper = true)
+    @Data
     private static class SparkCommandArgs extends AbstractCommandArgs {
+
+        @Parameter(names = {"-c", "--config"},
+            description = "Config file",
+            required = true)
+        private String configFile;
+
         private DeployMode deployMode;
 
-        public void setDeployMode(DeployMode deployMode) {
-            this.deployMode = deployMode;
+        @Override
+        public Command<?> buildCommand() {
+            return null;
         }
 
-        public DeployMode getDeployMode() {
-            return deployMode;
-        }
     }
 }

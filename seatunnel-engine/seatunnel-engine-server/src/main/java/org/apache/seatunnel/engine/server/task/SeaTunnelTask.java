@@ -27,10 +27,12 @@ import static org.apache.seatunnel.engine.server.task.statemachine.SeaTunnelTask
 import static org.apache.seatunnel.engine.server.task.statemachine.SeaTunnelTaskState.STARTING;
 import static org.apache.seatunnel.engine.server.task.statemachine.SeaTunnelTaskState.WAITING_RESTORE;
 
+import org.apache.seatunnel.api.common.metrics.MetricTags;
 import org.apache.seatunnel.api.table.type.Record;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
-import org.apache.seatunnel.engine.common.utils.ConsumerWithException;
+import org.apache.seatunnel.common.utils.function.ConsumerWithException;
 import org.apache.seatunnel.engine.core.checkpoint.InternalCheckpointListener;
+import org.apache.seatunnel.engine.core.dag.actions.Action;
 import org.apache.seatunnel.engine.core.dag.actions.PartitionTransformAction;
 import org.apache.seatunnel.engine.core.dag.actions.SinkAction;
 import org.apache.seatunnel.engine.core.dag.actions.SourceAction;
@@ -48,6 +50,7 @@ import org.apache.seatunnel.engine.server.dag.physical.flow.PhysicalExecutionFlo
 import org.apache.seatunnel.engine.server.dag.physical.flow.UnknownFlowException;
 import org.apache.seatunnel.engine.server.execution.TaskGroup;
 import org.apache.seatunnel.engine.server.execution.TaskLocation;
+import org.apache.seatunnel.engine.server.metrics.MetricsContext;
 import org.apache.seatunnel.engine.server.task.flow.ActionFlowLifeCycle;
 import org.apache.seatunnel.engine.server.task.flow.FlowLifeCycle;
 import org.apache.seatunnel.engine.server.task.flow.IntermediateQueueFlowLifeCycle;
@@ -57,10 +60,12 @@ import org.apache.seatunnel.engine.server.task.flow.PartitionTransformSourceFlow
 import org.apache.seatunnel.engine.server.task.flow.SinkFlowLifeCycle;
 import org.apache.seatunnel.engine.server.task.flow.SourceFlowLifeCycle;
 import org.apache.seatunnel.engine.server.task.flow.TransformFlowLifeCycle;
-import org.apache.seatunnel.engine.server.task.group.TaskGroupWithIntermediateQueue;
+import org.apache.seatunnel.engine.server.task.group.AbstractTaskGroupWithIntermediateQueue;
 import org.apache.seatunnel.engine.server.task.record.Barrier;
 import org.apache.seatunnel.engine.server.task.statemachine.SeaTunnelTaskState;
 
+import com.hazelcast.internal.metrics.MetricDescriptor;
+import com.hazelcast.internal.metrics.MetricsCollectionContext;
 import lombok.NonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -69,12 +74,13 @@ import java.io.IOException;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 
 public abstract class SeaTunnelTask extends AbstractTask {
@@ -92,13 +98,15 @@ public abstract class SeaTunnelTask extends AbstractTask {
 
     protected List<CompletableFuture<Void>> flowFutures;
 
-    protected final Map<Long, List<ActionSubtaskState>> checkpointStates = new HashMap<>();
+    protected final Map<Long, List<ActionSubtaskState>> checkpointStates = new ConcurrentHashMap<>();
 
-    private final Map<Long, Integer> cycleAcks = new HashMap<>();
+    private final Map<Long, Integer> cycleAcks = new ConcurrentHashMap<>();
 
     protected int indexID;
 
     private TaskGroup taskBelongGroup;
+
+    private MetricsContext metricsContext;
 
     public SeaTunnelTask(long jobID, TaskLocation taskID, int indexID, Flow executionFlow) {
         super(jobID, taskID);
@@ -110,6 +118,7 @@ public abstract class SeaTunnelTask extends AbstractTask {
     @Override
     public void init() throws Exception {
         super.init();
+        metricsContext = getExecutionContext().getOrCreateMetricsContext(taskLocation);
         this.currState = SeaTunnelTaskState.INIT;
         flowFutures = new ArrayList<>();
         allCycles = new ArrayList<>();
@@ -120,6 +129,7 @@ public abstract class SeaTunnelTask extends AbstractTask {
         CompletableFuture.allOf(flowFutures.toArray(new CompletableFuture[0])).whenComplete((s, e) -> closeCalled = true);
     }
 
+    @SuppressWarnings("checkstyle:MagicNumber")
     protected void stateProcess() throws Exception {
         switch (currState) {
             case INIT:
@@ -152,6 +162,8 @@ public abstract class SeaTunnelTask extends AbstractTask {
             case PREPARE_CLOSE:
                 if (closeCalled) {
                     currState = CLOSED;
+                } else {
+                    Thread.sleep(100);
                 }
                 break;
             case CLOSED:
@@ -179,7 +191,7 @@ public abstract class SeaTunnelTask extends AbstractTask {
         FlowLifeCycle lifeCycle;
         List<OneInputFlowLifeCycle<Record<?>>> flowLifeCycles = new ArrayList<>();
         if (!flow.getNext().isEmpty()) {
-            for (Flow f : executionFlow.getNext()) {
+            for (Flow f : flow.getNext()) {
                 flowLifeCycles.add((OneInputFlowLifeCycle<Record<?>>) convertFlowToActionLifeCycle(f));
             }
         }
@@ -194,14 +206,15 @@ public abstract class SeaTunnelTask extends AbstractTask {
             } else if (f.getAction() instanceof SinkAction) {
                 lifeCycle = new SinkFlowLifeCycle<>((SinkAction) f.getAction(), taskLocation, indexID, this,
                     ((SinkConfig) f.getConfig()).getCommitterTask(),
-                    ((SinkConfig) f.getConfig()).isContainCommitter(), completableFuture);
+                    ((SinkConfig) f.getConfig()).isContainCommitter(),
+                    completableFuture, this.getMetricsContext());
             } else if (f.getAction() instanceof TransformChainAction) {
                 lifeCycle =
                     new TransformFlowLifeCycle<SeaTunnelRow>((TransformChainAction) f.getAction(), this,
                         new SeaTunnelTransformCollector(flowLifeCycles), completableFuture);
             } else if (f.getAction() instanceof PartitionTransformAction) {
                 // TODO use index and taskID to create ringbuffer list
-                if (executionFlow.getNext().isEmpty()) {
+                if (flow.getNext().isEmpty()) {
                     lifeCycle = new PartitionTransformSinkFlowLifeCycle(this, completableFuture);
                 } else {
                     lifeCycle = new PartitionTransformSourceFlowLifeCycle(this, completableFuture);
@@ -213,8 +226,8 @@ public abstract class SeaTunnelTask extends AbstractTask {
             IntermediateQueueConfig config =
                 ((IntermediateExecutionFlow<IntermediateQueueConfig>) flow).getConfig();
             lifeCycle = new IntermediateQueueFlowLifeCycle(this, completableFuture,
-                ((TaskGroupWithIntermediateQueue) taskBelongGroup)
-                    .getBlockingQueueCache(config.getQueueID()));
+                ((AbstractTaskGroupWithIntermediateQueue) taskBelongGroup)
+                    .getQueueCache(config.getQueueID()));
             outputs = flowLifeCycles;
         } else {
             throw new UnknownFlowException(flow);
@@ -231,21 +244,29 @@ public abstract class SeaTunnelTask extends AbstractTask {
 
     @Override
     public Set<URL> getJarsUrl() {
+        return getFlowInfo((action, set) -> set.addAll(action.getJarUrls()));
+    }
+
+    public Set<Long> getActionIds() {
+        return getFlowInfo((action, set) -> set.add(action.getId()));
+    }
+
+    private <T> Set<T> getFlowInfo(BiConsumer<Action, Set<T>> function) {
         List<Flow> now = new ArrayList<>();
         now.add(executionFlow);
-        Set<URL> urls = new HashSet<>();
+        Set<T> result = new HashSet<>();
         while (!now.isEmpty()) {
             final List<Flow> next = new ArrayList<>();
             now.forEach(n -> {
                 if (n instanceof PhysicalExecutionFlow) {
-                    urls.addAll(((PhysicalExecutionFlow) n).getAction().getJarUrls());
+                    function.accept(((PhysicalExecutionFlow) n).getAction(), result);
                 }
                 next.addAll(n.getNext());
             });
             now.clear();
             now.addAll(next);
         }
-        return urls;
+        return result;
     }
 
     @Override
@@ -257,7 +278,8 @@ public abstract class SeaTunnelTask extends AbstractTask {
         Integer ackSize = cycleAcks.compute(barrier.getId(), (id, count) -> count == null ? 1 : ++count);
         if (ackSize == allCycles.size()) {
             if (barrier.prepareClose()) {
-                prepareCloseStatus = true;
+                this.prepareCloseStatus = true;
+                this.prepareCloseBarrierId.set(barrier.getId());
             }
             if (barrier.snapshot()) {
                 this.getExecutionContext().sendToMaster(
@@ -274,20 +296,16 @@ public abstract class SeaTunnelTask extends AbstractTask {
     @Override
     public void notifyCheckpointComplete(long checkpointId) throws Exception {
         notifyAllAction(listener -> listener.notifyCheckpointComplete(checkpointId));
-        if (prepareCloseStatus) {
-            closeCall();
-        }
+        tryClose(checkpointId);
     }
 
     @Override
     public void notifyCheckpointAborted(long checkpointId) throws Exception {
         notifyAllAction(listener -> listener.notifyCheckpointAborted(checkpointId));
-        if (prepareCloseStatus) {
-            closeCall();
-        }
+        tryClose(checkpointId);
     }
 
-    public void notifyAllAction(ConsumerWithException<InternalCheckpointListener> consumer){
+    public void notifyAllAction(ConsumerWithException<InternalCheckpointListener> consumer) {
         allCycles.stream()
             .filter(cycle -> cycle instanceof InternalCheckpointListener)
             .map(cycle -> (InternalCheckpointListener) cycle)
@@ -308,5 +326,18 @@ public abstract class SeaTunnelTask extends AbstractTask {
                 }
             });
         restoreComplete = true;
+    }
+
+    @Override
+    public MetricsContext getMetricsContext() {
+        return metricsContext;
+    }
+
+    @Override
+    public void provideDynamicMetrics(MetricDescriptor descriptor, MetricsCollectionContext context) {
+        if (null != metricsContext) {
+            metricsContext.provideDynamicMetrics(
+                descriptor.copy().withTag(MetricTags.TASK_NAME, this.getClass().getSimpleName()), context);
+        }
     }
 }

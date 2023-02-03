@@ -21,7 +21,7 @@ package org.apache.seatunnel.engine.server.task.record;
  * barrier flowing in data flow
  */
 public interface Barrier {
-    Long PREPARE_CLOSE_BARRIER_ID = 0L;
+    Long PREPARE_CLOSE_BARRIER_ID = Long.MAX_VALUE;
 
     /**
      * The ID of the barrier.
@@ -38,4 +38,5 @@ public interface Barrier {
      * Barrier indicating that the task should prepare to close.
      */
     boolean prepareClose();
+
 }

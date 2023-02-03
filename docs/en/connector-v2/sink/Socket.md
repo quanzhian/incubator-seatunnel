@@ -10,14 +10,13 @@ Used to send data to Socket Server. Both support streaming and batch mode.
 ## Key features
 
 - [ ] [exactly-once](../../concept/connector-v2-features.md)
-- [ ] [schema projection](../../concept/connector-v2-features.md)
 
 ##  Options
 
 | name           | type   | required | default value |
 | -------------- |--------|----------|---------------|
-| host           | String | Yes      | -             |
-| port           | Integer| yes      | -             |
+| host           | String | Yes      |               |
+| port           | Integer| yes      |               |
 | max_retries    | Integer| No       | 3             |
 | common-options |        | no       | -             |
 
@@ -69,10 +68,6 @@ source {
     }
 }
 
-transform {
-      sql = "select name, age from fake"
-}
-
 sink {
     Socket {
         host = "localhost"
@@ -96,3 +91,9 @@ nc -l -v 9999
 ```text
 {"name":"jared","age":17}
 ```
+
+## Changelog
+
+### 2.2.0-beta 2022-09-26
+
+- Add Socket Sink Connector

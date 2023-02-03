@@ -11,7 +11,6 @@ Send the data as a file to email.
 ## Key features
 
 - [ ] [exactly-once](../../concept/connector-v2-features.md)
-- [ ] [schema projection](../../concept/connector-v2-features.md)
 
 ## Options
 
@@ -80,3 +79,9 @@ Sink plugin common parameters, please refer to [Sink Common Options](common-opti
    }
 
 ```
+
+## Changelog
+
+### 2.2.0-beta 2022-09-26
+
+- Add Email Sink Connector

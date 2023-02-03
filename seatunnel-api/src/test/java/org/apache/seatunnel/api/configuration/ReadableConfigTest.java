@@ -17,11 +17,11 @@
 
 package org.apache.seatunnel.api.configuration;
 
+import org.apache.seatunnel.shade.com.fasterxml.jackson.core.type.TypeReference;
 import org.apache.seatunnel.shade.com.typesafe.config.Config;
 import org.apache.seatunnel.shade.com.typesafe.config.ConfigFactory;
 import org.apache.seatunnel.shade.com.typesafe.config.ConfigResolveOptions;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
@@ -34,9 +34,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-@SuppressWarnings({
-    "MagicNumber", "checkstyle:StaticVariableName"
-})
+@SuppressWarnings("checkstyle:StaticVariableName")
 public class ReadableConfigTest {
     private static final String CONFIG_PATH = "/conf/option-test.conf";
     private static ReadonlyConfig config;

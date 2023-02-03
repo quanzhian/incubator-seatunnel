@@ -45,9 +45,9 @@ import lombok.NonNull;
 
 import java.io.IOException;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -94,7 +94,7 @@ public class SinkAggregatedCommitterTask<CommandInfoT, AggregatedCommitInfoT> ex
     public void init() throws Exception {
         super.init();
         currState = INIT;
-        this.checkpointBarrierCounter = new HashMap<>();
+        this.checkpointBarrierCounter = new ConcurrentHashMap<>();
         this.commitInfoCache = new ConcurrentHashMap<>();
         this.writerAddressMap = new ConcurrentHashMap<>();
         this.checkpointCommitInfoMap = new ConcurrentHashMap<>();
@@ -117,6 +117,7 @@ public class SinkAggregatedCommitterTask<CommandInfoT, AggregatedCommitInfoT> ex
         return progress.toState();
     }
 
+    @SuppressWarnings("checkstyle:MagicNumber")
     protected void stateProcess() throws Exception {
         switch (currState) {
             case INIT:
@@ -142,11 +143,15 @@ public class SinkAggregatedCommitterTask<CommandInfoT, AggregatedCommitInfoT> ex
             case RUNNING:
                 if (prepareCloseStatus) {
                     currState = PREPARE_CLOSE;
+                } else {
+                    Thread.sleep(100);
                 }
                 break;
             case PREPARE_CLOSE:
                 if (closeCalled) {
                     currState = CLOSED;
+                } else {
+                    Thread.sleep(100);
                 }
                 break;
             case CLOSED:
@@ -176,7 +181,8 @@ public class SinkAggregatedCommitterTask<CommandInfoT, AggregatedCommitInfoT> ex
             return;
         }
         if (barrier.prepareClose()) {
-            prepareCloseStatus = true;
+            this.prepareCloseStatus = true;
+            this.prepareCloseBarrierId.set(barrier.getId());
         }
         if (barrier.snapshot()) {
             if (commitInfoCache.containsKey(barrier.getId())) {
@@ -213,19 +219,22 @@ public class SinkAggregatedCommitterTask<CommandInfoT, AggregatedCommitInfoT> ex
 
     @Override
     public void notifyCheckpointComplete(long checkpointId) throws Exception {
-        aggregatedCommitter.commit(checkpointCommitInfoMap.get(checkpointId));
-        checkpointCommitInfoMap.remove(checkpointId);
-        if (prepareCloseStatus) {
-            closeCall();
-        }
+        List<AggregatedCommitInfoT> aggregatedCommitInfo = new ArrayList<>();
+        checkpointCommitInfoMap.forEach((key, value) -> {
+            if (key > checkpointId) {
+                return;
+            }
+            aggregatedCommitInfo.addAll(value);
+            checkpointCommitInfoMap.remove(key);
+        });
+        aggregatedCommitter.commit(aggregatedCommitInfo);
+        tryClose(checkpointId);
     }
 
     @Override
     public void notifyCheckpointAborted(long checkpointId) throws Exception {
         aggregatedCommitter.abort(checkpointCommitInfoMap.get(checkpointId));
         checkpointCommitInfoMap.remove(checkpointId);
-        if (prepareCloseStatus) {
-            closeCall();
-        }
+        tryClose(checkpointId);
     }
 }

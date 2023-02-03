@@ -6,6 +6,14 @@
 
 Read data from local file system.
 
+:::tip
+
+If you use spark/flink, In order to use this connector, You must ensure your spark/flink cluster already integrated hadoop. The tested hadoop version is 2.x.
+
+If you use SeaTunnel Engine, It automatically integrated the hadoop jar when you download and install SeaTunnel Engine. You can check the jar package under ${SEATUNNEL_HOME}/lib to confirm this.
+
+:::
+
 ## Key features
 
 - [x] [batch](../../concept/connector-v2-features.md)
@@ -14,7 +22,7 @@ Read data from local file system.
 
 Read all the data in a split in a pollNext call. What splits are read will be saved in snapshot.
 
-- [x] [schema projection](../../concept/connector-v2-features.md)
+- [ ] [column projection](../../concept/connector-v2-features.md)
 - [x] [parallelism](../../concept/connector-v2-features.md)
 - [ ] [support user-defined split](../../concept/connector-v2-features.md)
 - [x] file format
@@ -26,16 +34,18 @@ Read all the data in a split in a pollNext call. What splits are read will be sa
 
 ## Options
 
-| name            | type   | required | default value       |
-|-----------------|--------|----------|---------------------|
-| path            | string | yes      | -                   |
-| type            | string | yes      | -                   |
-| delimiter       | string | no       | \001                |
-| date_format     | string | no       | yyyy-MM-dd          |
-| datetime_format | string | no       | yyyy-MM-dd HH:mm:ss |
-| time_format     | string | no       | HH:mm:ss            |
-| schema          | config | no       | -                   |
-| common-options  |        | no       | -                   |
+| name                      | type    | required | default value       |
+|---------------------------|---------|----------|---------------------|
+| path                      | string  | yes      | -                   |
+| type                      | string  | yes      | -                   |
+| delimiter                 | string  | no       | \001                |
+| parse_partition_from_path | boolean | no       | true                |
+| date_format               | string  | no       | yyyy-MM-dd          |
+| datetime_format           | string  | no       | yyyy-MM-dd HH:mm:ss |
+| time_format               | string  | no       | HH:mm:ss            |
+| skip_header_row_number    | long    | no       | 0                   |
+| schema                    | config  | no       | -                   |
+| common-options            |         | no       | -                   |
 
 ### path [string]
 
@@ -46,6 +56,20 @@ The source file path.
 Field delimiter, used to tell connector how to slice and dice fields when reading text files
 
 default `\001`, the same as hive's default delimiter
+
+### parse_partition_from_path [boolean]
+
+Control whether parse the partition keys and values from file path
+
+For example if you read a file from path `file://hadoop-cluster/tmp/seatunnel/parquet/name=tyrantlucifer/age=26`
+
+Every record data from file will be added these two fields:
+
+| name           | age |
+|----------------|-----|
+| tyrantlucifer  | 26  |
+
+Tips: **Do not define partition fields in schema option**
 
 ### date_format [string]
 
@@ -70,6 +94,16 @@ Time type format, used to tell connector how to convert string to time, supporte
 `HH:mm:ss` `HH:mm:ss.SSS`
 
 default `HH:mm:ss`
+
+### skip_header_row_number [long]
+
+Skip the first few lines, but only for the txt and csv.
+
+For example, set like following:
+
+`skip_header_row_number = 2`
+
+then Seatunnel will skip the first 2 lines from source files
 
 ### type [string]
 
@@ -194,3 +228,15 @@ LocalFile {
 }
 
 ```
+
+## Changelog
+
+### 2.2.0-beta 2022-09-26
+
+- Add Local File Source Connector
+
+### 2.3.0-beta 2022-10-20
+
+- [BugFix] Fix the bug of incorrect path in windows environment ([2980](https://github.com/apache/incubator-seatunnel/pull/2980))
+- [Improve] Support extract partition from SeaTunnelRow fields ([3085](https://github.com/apache/incubator-seatunnel/pull/3085))
+- [Improve] Support parse field from file path ([2985](https://github.com/apache/incubator-seatunnel/pull/2985))

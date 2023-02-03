@@ -17,6 +17,8 @@
 
 package org.apache.seatunnel.connectors.seatunnel.common.schema;
 
+import org.apache.seatunnel.api.configuration.Option;
+import org.apache.seatunnel.api.configuration.Options;
 import org.apache.seatunnel.api.table.type.ArrayType;
 import org.apache.seatunnel.api.table.type.BasicType;
 import org.apache.seatunnel.api.table.type.DecimalType;
@@ -30,19 +32,19 @@ import org.apache.seatunnel.common.config.CheckConfigUtil;
 import org.apache.seatunnel.common.config.CheckResult;
 import org.apache.seatunnel.common.utils.JsonUtils;
 
+import org.apache.seatunnel.shade.com.fasterxml.jackson.databind.JsonNode;
+import org.apache.seatunnel.shade.com.fasterxml.jackson.databind.node.JsonNodeType;
+import org.apache.seatunnel.shade.com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.seatunnel.shade.com.typesafe.config.Config;
 import org.apache.seatunnel.shade.com.typesafe.config.ConfigRenderOptions;
-
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeType;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.Serializable;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class SeaTunnelSchema implements Serializable {
-    public static final String SCHEMA = "schema";
+
+    public static final Option<Schema> SCHEMA = Options.key("schema").objectType(Schema.class).noDefaultValue().withDescription("SeaTunnel Schema");
     private static final String FIELD_KEY = "fields";
     private static final String SIMPLE_SCHEMA_FILED = "content";
     private final SeaTunnelRowType seaTunnelRowType;
@@ -147,25 +149,26 @@ public class SeaTunnelSchema implements Serializable {
         switch (sqlType) {
             case ARRAY:
                 SeaTunnelDataType<?> dataType = parseTypeByString(genericType);
-                if (BasicType.STRING_TYPE.equals(dataType)) {
-                    return ArrayType.STRING_ARRAY_TYPE;
-                } else if (BasicType.BOOLEAN_TYPE.equals(dataType)) {
-                    return ArrayType.BOOLEAN_ARRAY_TYPE;
-                } else if (BasicType.BYTE_TYPE.equals(dataType)) {
-                    return ArrayType.BYTE_ARRAY_TYPE;
-                } else if (BasicType.SHORT_TYPE.equals(dataType)) {
-                    return ArrayType.SHORT_ARRAY_TYPE;
-                } else if (BasicType.INT_TYPE.equals(dataType)) {
-                    return ArrayType.INT_ARRAY_TYPE;
-                } else if (BasicType.LONG_TYPE.equals(dataType)) {
-                    return ArrayType.LONG_ARRAY_TYPE;
-                } else if (BasicType.FLOAT_TYPE.equals(dataType)) {
-                    return ArrayType.FLOAT_ARRAY_TYPE;
-                } else if (BasicType.DOUBLE_TYPE.equals(dataType)) {
-                    return ArrayType.DOUBLE_ARRAY_TYPE;
-                } else {
-                    String errorMsg = String.format("Array type not support this genericType [%s]", genericType);
-                    throw new RuntimeException(errorMsg);
+                switch(dataType.getSqlType()) {
+                    case STRING:
+                        return ArrayType.STRING_ARRAY_TYPE;
+                    case BOOLEAN:
+                        return ArrayType.BOOLEAN_ARRAY_TYPE;
+                    case TINYINT:
+                        return ArrayType.BYTE_ARRAY_TYPE;
+                    case SMALLINT:
+                        return ArrayType.SHORT_ARRAY_TYPE;
+                    case INT:
+                        return ArrayType.INT_ARRAY_TYPE;
+                    case BIGINT:
+                        return ArrayType.LONG_ARRAY_TYPE;
+                    case FLOAT:
+                        return ArrayType.FLOAT_ARRAY_TYPE;
+                    case DOUBLE:
+                        return ArrayType.DOUBLE_ARRAY_TYPE;
+                    default:
+                        String errorMsg = String.format("Array type not support this genericType [%s]", genericType);
+                        throw new UnsupportedOperationException(errorMsg);
                 }
             case MAP:
                 return new MapType<>(parseTypeByString(keyGenericType), parseTypeByString(valueGenericType));

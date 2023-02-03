@@ -17,6 +17,7 @@
 
 package org.apache.seatunnel.engine.server.dag.physical;
 
+import org.apache.seatunnel.engine.common.config.server.QueueType;
 import org.apache.seatunnel.engine.core.dag.logical.LogicalDag;
 import org.apache.seatunnel.engine.core.job.JobImmutableInformation;
 import org.apache.seatunnel.engine.server.checkpoint.CheckpointPlan;
@@ -34,26 +35,24 @@ import java.util.concurrent.ExecutorService;
 public class PlanUtils {
 
     public static Tuple2<PhysicalPlan, Map<Integer, CheckpointPlan>> fromLogicalDAG(@NonNull LogicalDag logicalDag,
-                                                                      @NonNull NodeEngine nodeEngine,
-                                                                      @NonNull
-                                                                      JobImmutableInformation jobImmutableInformation,
-                                                                      long initializationTimestamp,
-                                                                      @NonNull ExecutorService executorService,
-                                                                      @NonNull FlakeIdGenerator flakeIdGenerator,
-                                                                      @NonNull IMap runningJobStateIMap,
-                                                                      @NonNull IMap runningJobStateTimestampsIMap) {
+                                                                                    @NonNull NodeEngine nodeEngine,
+                                                                                    @NonNull
+                                                                                        JobImmutableInformation jobImmutableInformation,
+                                                                                    long initializationTimestamp,
+                                                                                    @NonNull ExecutorService executorService,
+                                                                                    @NonNull FlakeIdGenerator flakeIdGenerator,
+                                                                                    @NonNull IMap runningJobStateIMap,
+                                                                                    @NonNull IMap runningJobStateTimestampsIMap,
+                                                                                    @NonNull QueueType queueType) {
         return new PhysicalPlanGenerator(
-            new ExecutionPlanGenerator(
-                logicalDag,
-                jobImmutableInformation,
-                initializationTimestamp)
-                .generate(),
+            new ExecutionPlanGenerator(logicalDag, jobImmutableInformation).generate(),
             nodeEngine,
             jobImmutableInformation,
             initializationTimestamp,
             executorService,
             flakeIdGenerator,
             runningJobStateIMap,
-            runningJobStateTimestampsIMap).generate();
+            runningJobStateTimestampsIMap,
+            queueType).generate();
     }
 }

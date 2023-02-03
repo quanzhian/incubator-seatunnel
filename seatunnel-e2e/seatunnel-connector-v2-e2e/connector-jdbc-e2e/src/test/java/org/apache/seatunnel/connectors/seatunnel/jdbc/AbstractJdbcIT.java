@@ -20,6 +20,7 @@ package org.apache.seatunnel.connectors.seatunnel.jdbc;
 import static org.awaitility.Awaitility.given;
 
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
+import org.apache.seatunnel.common.utils.ExceptionUtils;
 import org.apache.seatunnel.e2e.common.TestResource;
 import org.apache.seatunnel.e2e.common.TestSuiteBase;
 import org.apache.seatunnel.e2e.common.container.ContainerExtendedFactory;
@@ -28,6 +29,7 @@ import org.apache.seatunnel.e2e.common.junit.TestContainerExtension;
 
 import com.google.common.collect.Lists;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.TestTemplate;
@@ -35,13 +37,18 @@ import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.output.Slf4jLogConsumer;
 import org.testcontainers.lifecycle.Startables;
+import org.testcontainers.utility.DockerLoggerFactory;
 
 import java.io.IOException;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.sql.Connection;
-import java.sql.DriverManager;
+import java.sql.Driver;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
@@ -49,10 +56,8 @@ import java.util.stream.Stream;
 public abstract class AbstractJdbcIT extends TestSuiteBase implements TestResource {
 
     protected static final String HOST = "HOST";
-    protected Connection jdbcConnection;
     protected GenericContainer<?> dbServer;
-    private JdbcCase jdbcCase;
-    private String jdbcUrl;
+    protected JdbcCase jdbcCase;
 
     abstract JdbcCase getJdbcCase();
 
@@ -62,37 +67,49 @@ public abstract class AbstractJdbcIT extends TestSuiteBase implements TestResour
 
     abstract SeaTunnelRow initTestData();
 
+    protected Connection createAndChangeDatabase(Connection connection) {
+        //do nothing
+        return connection;
+    }
+
     @TestContainerExtension
     private final ContainerExtendedFactory extendedFactory = container -> {
-        Container.ExecResult extraCommands = container.execInContainer("bash", "-c", "mkdir -p /tmp/seatunnel/plugins/Jdbc/lib && cd /tmp/seatunnel/plugins/Jdbc/lib && curl -O " + jdbcCase.getDriverJar());
+        Container.ExecResult extraCommands = container.execInContainer("bash", "-c", "mkdir -p /tmp/jars && cd /tmp/jars && curl -O " + jdbcCase.getDriverJar());
         Assertions.assertEquals(0, extraCommands.getExitCode());
     };
 
-    private void getContainer() throws ClassNotFoundException, SQLException {
+    private void getContainer() throws SQLException, MalformedURLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
         jdbcCase = this.getJdbcCase();
         dbServer = new GenericContainer<>(jdbcCase.getDockerImage())
             .withNetwork(NETWORK)
             .withNetworkAliases(jdbcCase.getNetworkAliases())
             .withEnv(jdbcCase.getContainerEnv())
-            .withLogConsumer(new Slf4jLogConsumer(log));
+            .withLogConsumer(new Slf4jLogConsumer(DockerLoggerFactory.getLogger(jdbcCase.getDockerImage())));
         dbServer.setPortBindings(Lists.newArrayList(
-            String.format("%s:%s", jdbcCase.getPort(), jdbcCase.getPort())));
+            String.format("%s:%s", jdbcCase.getLocalPort(), jdbcCase.getPort())));
         Startables.deepStart(Stream.of(dbServer)).join();
-        Class.forName(jdbcCase.getDriverClass());
+
         given().ignoreExceptions()
             .await()
-            .atMost(180, TimeUnit.SECONDS)
-            .untilAsserted(this::initializeJdbcConnection);
-        initializeJdbcTable();
+            .atMost(360, TimeUnit.SECONDS)
+            .untilAsserted(() -> {
+                this.initializeJdbcConnection(jdbcCase.getJdbcUrl());
+            });
+        this.initializeJdbcTable();
     }
 
-    protected void initializeJdbcConnection() throws SQLException {
-        jdbcUrl = jdbcCase.getJdbcUrl().replace(HOST, dbServer.getHost());
-        jdbcConnection = DriverManager.getConnection(jdbcUrl, jdbcCase.getUserName(), jdbcCase.getPassword());
+    protected Connection initializeJdbcConnection(String jdbcUrl) throws SQLException, ClassNotFoundException, MalformedURLException, InstantiationException, IllegalAccessException {
+        URLClassLoader urlClassLoader = new URLClassLoader(new URL[]{new URL(jdbcCase.getDriverJar())}, AbstractJdbcIT.class.getClassLoader());
+        Thread.currentThread().setContextClassLoader(urlClassLoader);
+        Driver driver = (Driver) urlClassLoader.loadClass(jdbcCase.getDriverClass()).newInstance();
+        Properties props = new Properties();
+        props.put("user", jdbcCase.getUserName());
+        props.put("password", jdbcCase.getPassword());
+        return driver.connect(jdbcUrl.replace(HOST, dbServer.getHost()), props);
     }
 
     private void batchInsertData() {
-        try (Connection connection = DriverManager.getConnection(jdbcUrl, jdbcCase.getUserName(), jdbcCase.getPassword())) {
+        try (Connection connection = initializeJdbcConnection(String.format(jdbcCase.getJdbcTemplate(), jdbcCase.getLocalPort(), jdbcCase.getDataBase()))) {
             connection.setAutoCommit(false);
             try (PreparedStatement preparedStatement = connection.prepareStatement(jdbcCase.getInitDataSql())) {
 
@@ -102,20 +119,25 @@ public abstract class AbstractJdbcIT extends TestSuiteBase implements TestResour
                 preparedStatement.execute();
             }
             connection.commit();
-        } catch (SQLException exception) {
-            exception.printStackTrace();
+        } catch (Exception exception) {
+            log.error(ExceptionUtils.getMessage(exception));
+            throw new RuntimeException("get connection error", exception);
         }
     }
 
-    private void initializeJdbcTable() throws SQLException {
-        try (Connection connection = DriverManager.getConnection(jdbcUrl, jdbcCase.getUserName(), jdbcCase.getPassword())) {
-            Statement statement = connection.createStatement();
+    private void initializeJdbcTable() {
+        try (Connection connection = initializeJdbcConnection(jdbcCase.getJdbcUrl())) {
+            Connection newConnection = createAndChangeDatabase(connection);
+            Statement statement = newConnection.createStatement();
             String createSource = jdbcCase.getDdlSource();
             String createSink = jdbcCase.getDdlSink();
             statement.execute(createSource);
-            statement.execute(createSink);
-        } catch (SQLException exception) {
-            exception.printStackTrace();
+            if (StringUtils.isNotEmpty(createSink)) {
+                statement.execute(createSink);
+            }
+        } catch (Exception exception) {
+            log.error(ExceptionUtils.getMessage(exception));
+            throw new RuntimeException("get connection error", exception);
         }
         this.batchInsertData();
     }
@@ -128,9 +150,6 @@ public abstract class AbstractJdbcIT extends TestSuiteBase implements TestResour
 
     @Override
     public void tearDown() throws Exception {
-        if (jdbcConnection != null) {
-            jdbcConnection.close();
-        }
         if (dbServer != null) {
             dbServer.close();
         }

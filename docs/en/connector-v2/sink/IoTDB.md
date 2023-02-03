@@ -6,20 +6,18 @@
 
 Used to write data to IoTDB.
 
+:::tip
+
+There is a conflict of thrift version between IoTDB and Spark.Therefore, you need to execute `rm -f $SPARK_HOME/jars/libthrift*` and `cp $IOTDB_HOME/lib/libthrift* $SPARK_HOME/jars/` to resolve it.
+
+:::
+
 ## Key features
 
 - [x] [exactly-once](../../concept/connector-v2-features.md)
 
 IoTDB supports the `exactly-once` feature through idempotent writing. If two pieces of data have
 the same `key` and `timestamp`, the new data will overwrite the old one.
-
-- [ ] [schema projection](../../concept/connector-v2-features.md)
-
-:::tip
-
-There is a conflict of thrift version between IoTDB and Spark.Therefore, you need to execute `rm -f $SPARK_HOME/jars/libthrift*` and `cp $IOTDB_HOME/lib/libthrift* $SPARK_HOME/jars/` to resolve it.
-
-:::
 
 ## Options
 
@@ -111,7 +109,7 @@ Enable rpc compression in `IoTDB` client
 
 ### connection_timeout_in_ms [int]
 
-The maximum time (in ms) to wait when connect `IoTDB`
+The maximum time (in ms) to wait when connecting to `IoTDB`
 
 ### common options
 
@@ -202,3 +200,17 @@ IoTDB> SELECT * FROM root.test_group.* align by device;
 |2022-09-25T00:00:00.001Z|root.test_group.device_c|          36.3|        102|
 +------------------------+------------------------+--------------+-----------+
 ```
+
+## Changelog
+
+### 2.2.0-beta 2022-09-26
+
+- Add IoTDB Sink Connector
+
+### 2.3.0-beta 2022-10-20
+- [Improve] Improve IoTDB Sink Connector ([2917](https://github.com/apache/incubator-seatunnel/pull/2917))
+  - Support align by sql syntax
+  - Support sql split ignore case
+  - Support restore split offset to at-least-once
+  - Support read timestamp from RowRecord
+- [BugFix] Fix IoTDB connector sink NPE ([3080](https://github.com/apache/incubator-seatunnel/pull/3080))

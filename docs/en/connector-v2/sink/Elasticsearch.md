@@ -7,7 +7,7 @@ Output data to `Elasticsearch`.
 ## Key features
 
 - [ ] [exactly-once](../../concept/connector-v2-features.md)
-- [ ] [schema projection](../../concept/connector-v2-features.md)
+- [x] [cdc](../../concept/connector-v2-features.md)
 
 :::tip
 
@@ -19,16 +19,24 @@ Engine Supported
 
 ## Options
 
-| name           | type   | required | default value | 
-|----------------|--------|----------|---------------|
-| hosts          | array  | yes      | -             |
-| index          | string | yes      | -             |
-| index_type     | string | no       |               |
-| username       | string | no       |               |
-| password       | string | no       |               | 
-| max_retry_size | int    | no       | 3             |
-| max_batch_size | int    | no       | 10            |
-| common-options |        | no       | -             |
+| name                    | type    | required | default value | 
+|-------------------------|---------|----------|---------------|
+| hosts                   | array   | yes      | -             |
+| index                   | string  | yes      | -             |
+| index_type              | string  | no       |               |
+| primary_keys            | list    | no       |               |
+| key_delimiter           | string  | no       | `_`           |
+| username                | string  | no       |               |
+| password                | string  | no       |               | 
+| max_retry_count         | int     | no       | 3             |
+| max_batch_size          | int     | no       | 10            |
+| tls_verify_certificate  | boolean | no       | true          |
+| tls_verify_hostnames    | boolean | no       | true          |
+| tls_keystore_path       | string  | no       | -             |
+| tls_keystore_password   | string  | no       | -             |
+| tls_truststore_path     | string  | no       | -             |
+| tls_truststore_password | string  | no       | -             |
+| common-options          |         | no       | -             |
 
 
 ### hosts [array]
@@ -41,26 +49,129 @@ If not, we will treat it as a normal index.
 ### index_type [string]
 `Elasticsearch` index type, it is recommended not to specify in elasticsearch 6 and above
 
+### primary_keys [list]
+Primary key fields used to generate the document `_id`, this is cdc required options.
+
+### key_delimiter [string]
+Delimiter for composite keys ("_" by default), e.g., "$" would result in document `_id` "KEY1$KEY2$KEY3".
+
 ### username [string]
 x-pack username
 
 ### password [string]
 x-pack password
 
-### max_retry_size [int]
+### max_retry_count [int]
 one bulk request max try size
 
 ### max_batch_size [int]
 batch bulk doc max size
+
+### tls_verify_certificate [boolean]
+
+Enable certificates validation for HTTPS endpoints
+
+### tls_verify_hostname [boolean]
+
+Enable hostname validation for HTTPS endpoints
+
+### tls_keystore_path [string]
+
+The path to the PEM or JKS key store. This file must be readable by the operating system user running SeaTunnel.
+
+### tls_keystore_password [string]
+
+The key password for the key store specified
+
+### tls_truststore_path [string]
+
+The path to PEM or JKS trust store. This file must be readable by the operating system user running SeaTunnel.
+
+### tls_truststore_password [string]
+
+The key password for the trust store specified
 
 ### common options
 
 Sink plugin common parameters, please refer to [Sink Common Options](common-options.md) for details
 
 ## Examples
+
+Simple
+
 ```bash
-Elasticsearch {
-    hosts = ["localhost:9200"]
-    index = "seatunnel-${age}"
+sink {
+    Elasticsearch {
+        hosts = ["localhost:9200"]
+        index = "seatunnel-${age}"
+    }
 }
 ```
+
+CDC(Change data capture) event
+
+```bash
+sink {
+    Elasticsearch {
+        hosts = ["localhost:9200"]
+        index = "seatunnel-${age}"
+        
+        # cdc required options
+        primary_keys = ["key1", "key2", ...]
+    }
+}
+```
+
+SSL (Disable certificates validation)
+
+```hocon
+sink {
+    Elasticsearch {
+        hosts = ["https://localhost:9200"]
+        username = "elastic"
+        password = "elasticsearch"
+        
+        tls_verify_certificate = false
+    }
+}
+```
+
+SSL (Disable hostname validation)
+
+```hocon
+sink {
+    Elasticsearch {
+        hosts = ["https://localhost:9200"]
+        username = "elastic"
+        password = "elasticsearch"
+        
+        tls_verify_hostname = false
+    }
+}
+```
+
+SSL (Enable certificates validation)
+
+```hocon
+sink {
+    Elasticsearch {
+        hosts = ["https://localhost:9200"]
+        username = "elastic"
+        password = "elasticsearch"
+        
+        tls_keystore_path = "${your elasticsearch home}/config/certs/http.p12"
+        tls_keystore_password = "${your password}"
+    }
+}
+```
+
+## Changelog
+
+### 2.2.0-beta 2022-09-26
+
+- Add Elasticsearch Sink Connector
+
+### next version
+
+- [Feature] Support CDC write DELETE/UPDATE/INSERT events ([3673](https://github.com/apache/incubator-seatunnel/pull/3673))
+- [Feature] Support https protocol & compatible with opensearch ([3997](https://github.com/apache/incubator-seatunnel/pull/3997))

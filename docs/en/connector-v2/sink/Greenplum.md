@@ -9,7 +9,6 @@ Write data to Greenplum using [Jdbc connector](Jdbc.md).
 ## Key features
 
 - [ ] [exactly-once](../../concept/connector-v2-features.md)
-- [ ] [schema projection](../../concept/connector-v2-features.md)
 
 :::tip
 
@@ -34,3 +33,9 @@ The URL of the JDBC connection. if you use postgresql driver the value is `jdbc:
 ### common options
 
 Sink plugin common parameters, please refer to [Sink Common Options](common-options.md) for details
+
+## Changelog
+
+### 2.2.0-beta 2022-09-26
+
+- Add Greenplum Sink Connector

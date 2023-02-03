@@ -17,7 +17,10 @@
 
 package org.apache.seatunnel.engine.server.dag.physical;
 
+import static org.apache.seatunnel.engine.common.config.server.QueueType.BLOCKINGQUEUE;
+
 import org.apache.seatunnel.api.sink.SinkAggregatedCommitter;
+import org.apache.seatunnel.engine.common.config.server.QueueType;
 import org.apache.seatunnel.engine.common.utils.IdGenerator;
 import org.apache.seatunnel.engine.common.utils.PassiveCompletableFuture;
 import org.apache.seatunnel.engine.core.dag.actions.Action;
@@ -26,7 +29,7 @@ import org.apache.seatunnel.engine.core.dag.actions.SinkAction;
 import org.apache.seatunnel.engine.core.dag.actions.SourceAction;
 import org.apache.seatunnel.engine.core.dag.internal.IntermediateQueue;
 import org.apache.seatunnel.engine.core.job.JobImmutableInformation;
-import org.apache.seatunnel.engine.core.job.PipelineState;
+import org.apache.seatunnel.engine.core.job.PipelineStatus;
 import org.apache.seatunnel.engine.server.checkpoint.CheckpointPlan;
 import org.apache.seatunnel.engine.server.dag.execution.ExecutionEdge;
 import org.apache.seatunnel.engine.server.dag.execution.ExecutionPlan;
@@ -49,7 +52,8 @@ import org.apache.seatunnel.engine.server.task.SinkAggregatedCommitterTask;
 import org.apache.seatunnel.engine.server.task.SourceSeaTunnelTask;
 import org.apache.seatunnel.engine.server.task.SourceSplitEnumeratorTask;
 import org.apache.seatunnel.engine.server.task.TransformSeaTunnelTask;
-import org.apache.seatunnel.engine.server.task.group.TaskGroupWithIntermediateQueue;
+import org.apache.seatunnel.engine.server.task.group.TaskGroupWithIntermediateBlockingQueue;
+import org.apache.seatunnel.engine.server.task.group.TaskGroupWithIntermediateDisruptor;
 
 import com.google.common.collect.Lists;
 import com.hazelcast.flakeidgen.FlakeIdGenerator;
@@ -111,9 +115,17 @@ public class PhysicalPlanGenerator {
      */
     private final Set<TaskLocation> startingTasks;
 
+    /**
+     * <br> key: the subtask locations;
+     * <br> value: all actions in this subtask; f0: action id, f1: action index;
+     */
+    private final Map<TaskLocation, Set<Tuple2<Long, Integer>>> subtaskActions;
+
     private final IMap<Object, Object> runningJobStateIMap;
 
     private final IMap<Object, Object> runningJobStateTimestampsIMap;
+
+    private final QueueType queueType;
 
     public PhysicalPlanGenerator(@NonNull ExecutionPlan executionPlan,
                                  @NonNull NodeEngine nodeEngine,
@@ -122,7 +134,8 @@ public class PhysicalPlanGenerator {
                                  @NonNull ExecutorService executorService,
                                  @NonNull FlakeIdGenerator flakeIdGenerator,
                                  @NonNull IMap runningJobStateIMap,
-                                 @NonNull IMap runningJobStateTimestampsIMap) {
+                                 @NonNull IMap runningJobStateTimestampsIMap,
+                                 @NonNull QueueType queueType) {
         this.pipelines = executionPlan.getPipelines();
         this.nodeEngine = nodeEngine;
         this.jobImmutableInformation = jobImmutableInformation;
@@ -132,14 +145,16 @@ public class PhysicalPlanGenerator {
         // the checkpoint of a pipeline
         this.pipelineTasks = new HashSet<>();
         this.startingTasks = new HashSet<>();
+        this.subtaskActions = new HashMap<>();
         this.runningJobStateIMap = runningJobStateIMap;
         this.runningJobStateTimestampsIMap = runningJobStateTimestampsIMap;
+        this.queueType = queueType;
     }
 
     public Tuple2<PhysicalPlan, Map<Integer, CheckpointPlan>> generate() {
 
         // TODO Determine which tasks do not need to be restored according to state
-        CopyOnWriteArrayList<PassiveCompletableFuture<PipelineState>> waitForCompleteBySubPlanList =
+        CopyOnWriteArrayList<PassiveCompletableFuture<PipelineStatus>> waitForCompleteBySubPlanList =
             new CopyOnWriteArrayList<>();
 
         Map<Integer, CheckpointPlan> checkpointPlans = new HashMap<>();
@@ -147,6 +162,7 @@ public class PhysicalPlanGenerator {
         Stream<SubPlan> subPlanStream = pipelines.stream().map(pipeline -> {
             this.pipelineTasks.clear();
             this.startingTasks.clear();
+            this.subtaskActions.clear();
             final int pipelineId = pipeline.getId();
             final List<ExecutionEdge> edges = pipeline.getEdges();
 
@@ -163,7 +179,7 @@ public class PhysicalPlanGenerator {
             physicalVertexList.addAll(
                 getPartitionTask(edges, pipelineId, totalPipelineNum));
 
-            CompletableFuture<PipelineState> pipelineFuture = new CompletableFuture<>();
+            CompletableFuture<PipelineStatus> pipelineFuture = new CompletableFuture<>();
             waitForCompleteBySubPlanList.add(new PassiveCompletableFuture<>(pipelineFuture));
 
             checkpointPlans.put(pipelineId,
@@ -172,6 +188,7 @@ public class PhysicalPlanGenerator {
                     .pipelineSubtasks(pipelineTasks)
                     .startingSubtasks(startingTasks)
                     .pipelineActions(pipeline.getActions())
+                    .subtaskActions(subtaskActions)
                     .build());
             return new SubPlan(pipelineId,
                 totalPipelineNum,
@@ -207,10 +224,10 @@ public class PhysicalPlanGenerator {
             .collect(Collectors.toList());
 
         return collect.stream().map(s -> (SinkAction<?, ?, ?, ?>) s.getRightVertex().getAction())
-            .map(s -> {
+            .map(sinkAction -> {
                 Optional<? extends SinkAggregatedCommitter<?, ?>> sinkAggregatedCommitter;
                 try {
-                    sinkAggregatedCommitter = s.getSink().createAggregatedCommitter();
+                    sinkAggregatedCommitter = sinkAction.getSink().createAggregatedCommitter();
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
@@ -222,22 +239,23 @@ public class PhysicalPlanGenerator {
                         new TaskGroupLocation(jobImmutableInformation.getJobId(), pipelineIndex, taskGroupID);
                     TaskLocation taskLocation = new TaskLocation(taskGroupLocation, taskTypeId, 0);
                     SinkAggregatedCommitterTask<?, ?> t =
-                        new SinkAggregatedCommitterTask(jobImmutableInformation.getJobId(), taskLocation, s,
+                        new SinkAggregatedCommitterTask(jobImmutableInformation.getJobId(), taskLocation, sinkAction,
                             sinkAggregatedCommitter.get());
-                    committerTaskIDMap.put(s, taskLocation);
+                    committerTaskIDMap.put(sinkAction, taskLocation);
 
                     // checkpoint
                     pipelineTasks.add(taskLocation);
+                    subtaskActions.put(taskLocation, Collections.singleton(Tuple2.tuple2(sinkAction.getId(), -1)));
 
                     return new PhysicalVertex(atomicInteger.incrementAndGet(),
                         executorService,
                         collect.size(),
-                        new TaskGroupDefaultImpl(taskGroupLocation, s.getName() + "-AggregatedCommitterTask",
+                        new TaskGroupDefaultImpl(taskGroupLocation, sinkAction.getName() + "-AggregatedCommitterTask",
                             Lists.newArrayList(t)),
                         flakeIdGenerator,
                         pipelineIndex,
                         totalPipelineNum,
-                        s.getJarUrls(),
+                        sinkAction.getJarUrls(),
                         jobImmutableInformation,
                         initializationTimestamp,
                         nodeEngine,
@@ -268,7 +286,7 @@ public class PhysicalPlanGenerator {
                     SeaTunnelTask seaTunnelTask =
                         new TransformSeaTunnelTask(jobImmutableInformation.getJobId(), taskLocation, i, flow);
                     // checkpoint
-                    pipelineTasks.add(taskLocation);
+                    fillCheckpointPlan(seaTunnelTask);
                     t.add(new PhysicalVertex(
                         i,
                         executorService,
@@ -295,24 +313,25 @@ public class PhysicalPlanGenerator {
                                                    int totalPipelineNum) {
         AtomicInteger atomicInteger = new AtomicInteger(-1);
 
-        return sources.stream().map(s -> {
+        return sources.stream().map(sourceAction -> {
             long taskGroupID = idGenerator.getNextId();
             long taskTypeId = idGenerator.getNextId();
             TaskGroupLocation taskGroupLocation =
                 new TaskGroupLocation(jobImmutableInformation.getJobId(), pipelineIndex, taskGroupID);
             TaskLocation taskLocation = new TaskLocation(taskGroupLocation, taskTypeId, 0);
             SourceSplitEnumeratorTask<?> t =
-                new SourceSplitEnumeratorTask<>(jobImmutableInformation.getJobId(), taskLocation, s);
+                new SourceSplitEnumeratorTask<>(jobImmutableInformation.getJobId(), taskLocation, sourceAction);
             // checkpoint
             pipelineTasks.add(taskLocation);
             startingTasks.add(taskLocation);
-            enumeratorTaskIDMap.put(s, taskLocation);
+            subtaskActions.put(taskLocation, Collections.singleton(Tuple2.tuple2(sourceAction.getId(), -1)));
+            enumeratorTaskIDMap.put(sourceAction, taskLocation);
 
             return new PhysicalVertex(
                 atomicInteger.incrementAndGet(),
                 executorService,
                 sources.size(),
-                new TaskGroupDefaultImpl(taskGroupLocation, s.getName() + "-SplitEnumerator",
+                new TaskGroupDefaultImpl(taskGroupLocation, sourceAction.getName() + "-SplitEnumerator",
                     Lists.newArrayList(t)),
                 flakeIdGenerator,
                 pipelineIndex,
@@ -352,8 +371,6 @@ public class PhysicalPlanGenerator {
                                 flowTaskIDPrefixMap.computeIfAbsent(f.getFlowID(), id -> idGenerator.getNextId());
                             final TaskLocation taskLocation =
                                 new TaskLocation(taskGroupLocation, taskIDPrefix, finalParallelismIndex);
-                            // checkpoint
-                            pipelineTasks.add(taskLocation);
                             if (f instanceof PhysicalExecutionFlow) {
                                 return new SourceSeaTunnelTask<>(jobImmutableInformation.getJobId(),
                                     taskLocation,
@@ -363,19 +380,27 @@ public class PhysicalPlanGenerator {
                                     taskLocation,
                                     finalParallelismIndex, f);
                             }
-                        }).collect(Collectors.toList());
+                        }).peek(this::fillCheckpointPlan).collect(Collectors.toList());
                     Set<URL> jars =
                         taskList.stream().flatMap(task -> task.getJarsUrl().stream()).collect(Collectors.toSet());
 
                     if (taskList.stream().anyMatch(TransformSeaTunnelTask.class::isInstance)) {
                         // contains IntermediateExecutionFlow in task group
+                        TaskGroupDefaultImpl taskGroup;
+                        if (queueType.equals(BLOCKINGQUEUE)) {
+                            taskGroup = new TaskGroupWithIntermediateBlockingQueue(taskGroupLocation, flow.getAction().getName() +
+                                "-SourceTask",
+                                taskList.stream().map(task -> (Task) task).collect(Collectors.toList()));
+                        } else {
+                            taskGroup = new TaskGroupWithIntermediateDisruptor(taskGroupLocation, flow.getAction().getName() +
+                                "-SourceTask",
+                                taskList.stream().map(task -> (Task) task).collect(Collectors.toList()));
+                        }
                         t.add(new PhysicalVertex(
                             i,
                             executorService,
                             flow.getAction().getParallelism(),
-                            new TaskGroupWithIntermediateQueue(taskGroupLocation, flow.getAction().getName() +
-                                "-SourceTask",
-                                taskList.stream().map(task -> (Task) task).collect(Collectors.toList())),
+                            taskGroup,
                             flakeIdGenerator,
                             pipelineIndex,
                             totalPipelineNum,
@@ -406,6 +431,14 @@ public class PhysicalPlanGenerator {
                 }
                 return t.stream();
             }).collect(Collectors.toList());
+    }
+
+    private void fillCheckpointPlan(SeaTunnelTask task) {
+        pipelineTasks.add(task.getTaskLocation());
+        subtaskActions.put(task.getTaskLocation(),
+            task.getActionIds().stream()
+                .map(id -> Tuple2.tuple2(id, task.getTaskLocation().getTaskIndex()))
+                .collect(Collectors.toSet()));
     }
 
     /**

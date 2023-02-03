@@ -17,7 +17,7 @@
 
 package org.apache.seatunnel.api.configuration;
 
-import com.fasterxml.jackson.core.type.TypeReference;
+import org.apache.seatunnel.shade.com.fasterxml.jackson.core.type.TypeReference;
 
 import java.util.Objects;
 
@@ -42,7 +42,7 @@ public class Option<T> {
      */
     String description = "";
 
-    Option(String key, TypeReference<T> typeReference, T defaultValue) {
+    public Option(String key, TypeReference<T> typeReference, T defaultValue) {
         this.key = key;
         this.typeReference = typeReference;
         this.defaultValue = defaultValue;

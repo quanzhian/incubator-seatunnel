@@ -15,7 +15,6 @@ Two ways of connecting Phoenix with Java JDBC. One is to connect to zookeeper th
 ## Key features
 
 - [ ] [exactly-once](../../concept/connector-v2-features.md)
-- [ ] [schema projection](../../concept/connector-v2-features.md)
 
 ## Options
 
@@ -48,3 +47,9 @@ use thin client drive
         query = "upsert into test.sink(age, name) values(?, ?)"
     }
 ```
+
+## Changelog
+
+### 2.2.0-beta 2022-09-26
+
+- Add Phoenix Sink Connector

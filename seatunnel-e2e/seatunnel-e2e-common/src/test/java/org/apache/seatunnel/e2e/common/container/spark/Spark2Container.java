@@ -18,9 +18,12 @@
 package org.apache.seatunnel.e2e.common.container.spark;
 
 import org.apache.seatunnel.e2e.common.container.TestContainer;
+import org.apache.seatunnel.e2e.common.container.TestContainerId;
 
 import com.google.auto.service.AutoService;
 import lombok.NoArgsConstructor;
+
+import java.io.File;
 
 /**
  * This class is the base class of SparkEnvironment test. The before method will create a Spark master, and after method will close the Spark master.
@@ -31,18 +34,23 @@ import lombok.NoArgsConstructor;
 public class Spark2Container extends AbstractTestSparkContainer {
 
     @Override
-    public String identifier() {
-        return "spark:2.4.3";
+    public TestContainerId identifier() {
+        return TestContainerId.SPARK_2_4;
     }
 
     @Override
     protected String getStartModuleName() {
-        return "seatunnel-spark-starter";
+        return "seatunnel-spark-starter" + File.separator + "seatunnel-spark-2-starter";
+    }
+
+    @Override
+    protected String getDockerImage() {
+        return "bitnami/spark:2.4.6";
     }
 
     @Override
     protected String getStartShellName() {
-        return "start-seatunnel-spark-connector-v2.sh";
+        return "start-seatunnel-spark-2-connector-v2.sh";
     }
 
     @Override

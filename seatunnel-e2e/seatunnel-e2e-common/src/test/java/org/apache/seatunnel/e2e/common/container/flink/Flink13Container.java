@@ -18,9 +18,12 @@
 package org.apache.seatunnel.e2e.common.container.flink;
 
 import org.apache.seatunnel.e2e.common.container.TestContainer;
+import org.apache.seatunnel.e2e.common.container.TestContainerId;
 
 import com.google.auto.service.AutoService;
 import lombok.NoArgsConstructor;
+
+import java.io.File;
 
 /**
  * This class is the base class of FlinkEnvironment test for new seatunnel connector API.
@@ -32,8 +35,8 @@ import lombok.NoArgsConstructor;
 public class Flink13Container extends AbstractTestFlinkContainer {
 
     @Override
-    public String identifier() {
-        return "flink:1.13.6";
+    public TestContainerId identifier() {
+        return TestContainerId.FLINK_1_13;
     }
 
     @Override
@@ -43,12 +46,12 @@ public class Flink13Container extends AbstractTestFlinkContainer {
 
     @Override
     protected String getStartModuleName() {
-        return "seatunnel-flink-starter";
+        return "seatunnel-flink-starter" + File.separator + "seatunnel-flink-13-starter";
     }
 
     @Override
     protected String getStartShellName() {
-        return "start-seatunnel-flink-connector-v2.sh";
+        return "start-seatunnel-flink-13-connector-v2.sh";
     }
 
     @Override

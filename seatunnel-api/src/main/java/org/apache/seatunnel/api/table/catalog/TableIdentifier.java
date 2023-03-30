@@ -47,7 +47,7 @@ public final class TableIdentifier implements Serializable {
         return databaseName;
     }
 
-    public String gettableName() {
+    public String getTableName() {
         return tableName;
     }
 
@@ -72,6 +72,10 @@ public final class TableIdentifier implements Serializable {
     @Override
     public int hashCode() {
         return Objects.hash(catalogName, databaseName, tableName);
+    }
+
+    public TableIdentifier copy() {
+        return TableIdentifier.of(catalogName, databaseName, tableName);
     }
 
     @Override

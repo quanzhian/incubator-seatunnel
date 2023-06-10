@@ -21,13 +21,14 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 
 import java.io.Serializable;
+import java.math.BigDecimal;
 
 @Data
 @AllArgsConstructor
 public class PartitionParameter implements Serializable {
 
     String partitionColumnName;
-    Long minValue;
-    Long maxValue;
+    BigDecimal minValue;
+    BigDecimal maxValue;
     Integer partitionNumber;
 }
